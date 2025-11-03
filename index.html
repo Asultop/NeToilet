@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>东北电力大学 - 卫生间查询</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <!-- Toilet paper icon -->
+            <svg class="toilet-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M17 3H8a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h7c3.314 0 6-2.686 6-6V9c0-3.314-2.686-6-6-6z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M10 8a2 2 0 1 0 0 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M7 15c1.333-1 2.667-1 4 0s2.667 1 4 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M9 19v1a1 1 0 0 0 1 1h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <h1 class="title">东北电力大学 - 卫生间查询</h1>
+        </header>
+
+        <!-- Map view (替代 原先 校区/楼宇/楼层 选择) -->
+        <div class="selection-card">
+            <h2 class="section-title">地图视图</h2>
+            <!-- Hidden original selects kept for compatibility with existing logic (视觉上已用地图替代) -->
+            <div style="display:none;" aria-hidden="true">
+                <select id="campusSelect" class="combo-box">
+                    <option value="">选择校区</option>
+                </select>
+                <select id="buildingSelect" class="combo-box">
+                    <option value="">选择楼宇</option>
+                </select>
+                <select id="floorSelect" class="combo-box">
+                    <option value="">选择楼层</option>
+                </select>
+            </div>
+
+            <div class="map-container">
+                <!-- Leaflet 地图容器 -->
+                <div id="map" aria-label="校园地图"></div>
+            </div>
+
+            <!-- Details Card (仍保留，用于展示点击标注或选中后的详细信息) -->
+            <div class="details-card" id="detailsCard">
+                <div class="detail-item">
+                    <span class="detail-label">位置：</span>
+                    <span class="detail-value" id="locationShort">-</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">卫生间：</span>
+                    <span class="detail-value" id="restroomType">-</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">附近房间号：</span>
+                    <span class="detail-value" id="roomNumber">-</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">具体位置：</span>
+                    <span class="detail-value" id="locationDesc">-</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">经纬度坐标：</span>
+                    <span class="detail-value" id="coordinates">-</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">备注：</span>
+                    <span class="detail-value" id="notes">-</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- All Restrooms List -->
+        <div class="restrooms-section">
+            <h2 class="section-title">所有卫生间 <span id="restroomsCount" class="count-badge"></span></h2>
+            <div class="restrooms-list" id="restroomsList">
+                <!-- Restroom buttons will be dynamically added here -->
+            </div>
+        </div>
+
+        <!-- Choose restroom type modal (when multiple entries exist for same location) -->
+        <div class="modal" id="chooseRestroomModal">
+            <div class="modal-content">
+                <h3>请选择卫生间类型</h3>
+                <div id="chooseRestroomList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
+                <div class="modal-buttons">
+                    <button class="btn-secondary" id="cancelChooseRestroom">取消</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Location Permission / Locating Modal -->
+        <div class="modal" id="locationModal">
+            <div class="modal-content">
+                <!-- Permission state -->
+                <div id="permissionState">
+                    <h3>需要位置权限</h3>
+                    <p>为了为您找到最近的卫生间，我们需要获取您的位置信息。</p>
+                    <div class="modal-buttons">
+                        <button class="btn-primary" id="allowLocation">允许</button>
+                        <button class="btn-secondary" id="denyLocation">拒绝</button>
+                    </div>
+                </div>
+
+                <!-- Locating state (hidden until user allows) -->
+                <div id="locatingState" style="display:none; text-align:center;">
+                    <div class="spinner" aria-hidden="true"></div>
+                    <h3>正在定位…</h3>
+                    <p>定位过程中请稍候，定位完成后该窗口将自动关闭。</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Floor Selection Modal -->
+        <div class="modal" id="floorModal">
+            <div class="modal-content">
+                <h3>选择楼层</h3>
+                <p>无法获取海拔信息，请手动选择您所在的楼层：</p>
+                <select id="manualFloorSelect" class="combo-box">
+                    <option value="">选择楼层</option>
+                </select>
+                <!-- Match result area: 当所选楼层无卫生间时显示匹配信息 -->
+                <div id="floorMatchResult" style="display:none; margin-top:12px; border-top:1px dashed rgba(0,0,0,0.06); padding-top:12px;">
+                    <!-- Filled dynamically: 校区 楼宇 楼层 厕所信息 距离您多少米 -->
+                    <div id="floorMatchMessage" style="font-weight:600; color:var(--text-secondary); margin-bottom:8px;"></div>
+                    <div id="floorMatchDetails" style="font-size:13px; color:var(--text-primary);"></div>
+                </div>
+                <div class="modal-buttons">
+                    <button class="btn-primary" id="confirmFloor">确认</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Added no restroom notification modal -->
+        <div class="modal" id="noRestroomModal">
+            <div class="modal-content">
+                <h3>当前楼层无厕所</h3>
+                <p>当前选择的楼层没有查询到任何卫生间信息，请选择其他楼层。</p>
+                <div class="modal-buttons">
+                    <button class="btn-primary" id="confirmNoRestroom">了解</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Added debug footer with location info and theme toggle -->
+        <footer class="debug-footer">
+            <div class="debug-info">
+                <div class="debug-item">
+                    <span class="debug-label">经度：</span>
+                    <span class="debug-value" id="debugLongitude">-</span>
+                </div>
+                <div class="debug-item">
+                    <span class="debug-label">纬度：</span>
+                    <span class="debug-value" id="debugLatitude">-</span>
+                </div>
+            </div>
+            <button class="theme-toggle" id="themeToggle" aria-label="切换主题">
+                <svg class="theme-icon sun-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="12" cy="12" r="5" stroke="currentColor" stroke-width="2"/>
+                    <path d="M12 1V3M12 21V23M23 12H21M3 12H1M20.485 20.485L19.071 19.071M4.929 4.929L3.515 3.515M20.485 3.515L19.071 4.929M4.929 19.071L3.515 20.485" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+                <svg class="theme-icon moon-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+        </footer>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
