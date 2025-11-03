@@ -27,6 +27,13 @@ let lastHighlightedBuilding = null
 let buildingEnterTimers = new Map() // buildingName -> { timeoutId, intervalId } for debounce/countdown
 let watchStartedOnce = false
 let isMockingLocation = false
+let prevUserLocation = null
+let isFollowing = true
+let followResumeTimer = null
+const FOLLOW_RESUME_DELAY = 10000 // ms of inactivity before resuming follow
+let followResumeInterval = null
+let followResumeStart = null
+let showCountdownDebounceTimer = null
 
 // DOM Elements
 const campusSelect = document.getElementById("campusSelect")
@@ -54,6 +61,9 @@ const enterConfirmToast = document.getElementById("enterConfirmToast")
 const enterConfirmProgressCircle = document.getElementById("enterConfirmProgressCircle")
 const enterConfirmBuildingLabel = document.getElementById("enterConfirmBuilding")
 const enterConfirmSeconds = document.getElementById("enterConfirmSeconds")
+const copyCoordinatesBtn = document.getElementById("copyCoordinatesBtn")
+const directionShort = document.getElementById("directionShort")
+const locateBtn = document.getElementById("locateBtn")
 const floorModal = document.getElementById("floorModal")
 const manualFloorSelect = document.getElementById("manualFloorSelect")
 const debugLatitude = document.getElementById("debugLatitude")
@@ -110,6 +120,15 @@ function updateDebugInfo() {
     debugLatitude.textContent = "-"
     debugLongitude.textContent = "-"
   }
+}
+
+function updateLocateButtonVisual() {
+  try {
+    if (!locateBtn) return
+    locateBtn.setAttribute('aria-pressed', isFollowing ? 'true' : 'false')
+    if (isFollowing) locateBtn.classList.add('active')
+    else locateBtn.classList.remove('active')
+  } catch (e) {}
 }
 
 // Load data from JSON files
@@ -414,6 +433,26 @@ function setupEventListeners() {
     return
   })
 
+  // copy coordinates button handler
+  if (copyCoordinatesBtn) {
+    copyCoordinatesBtn.addEventListener('click', async () => {
+      try {
+        const txt = coordinates ? coordinates.textContent : ''
+        if (!txt || txt === '-' || txt.toLowerCase().includes('无')) return
+        await navigator.clipboard.writeText(txt)
+        // simple feedback: change button text briefly
+        const prev = copyCoordinatesBtn.textContent
+        copyCoordinatesBtn.textContent = '已复制'
+        setTimeout(() => { try { copyCoordinatesBtn.textContent = prev } catch (e) {} }, 1200)
+      } catch (e) {
+        console.warn('[Asul] 复制坐标失败', e)
+      }
+    })
+  }
+
+  // locate button handler
+  // Follow control removed: app uses automatic follow with auto-resume after inactivity
+
   document.getElementById("confirmNoRestroom").addEventListener("click", () => {
     noRestroomModal.classList.remove("show")
   })
@@ -509,10 +548,14 @@ function startWatchingLocation() {
     (position) => {
       // If developer mocking is active, ignore real geolocation updates so mock location remains
       if (isMockingLocation) return
+      // preserve previous location for bearing computation
+      if (userLocation) prevUserLocation = { ...userLocation }
       userLocation = {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
         altitude: position.coords.altitude,
+        heading: (typeof position.coords.heading === 'number' && !Number.isNaN(position.coords.heading)) ? position.coords.heading : null,
+        speed: (typeof position.coords.speed === 'number' && !Number.isNaN(position.coords.speed)) ? position.coords.speed : null,
       }
       updateDebugInfo()
       updateUserMarker()
@@ -562,6 +605,79 @@ window.__mockLocation = function (lat, lng) {
 window.__stopMockLocation = function () {
   isMockingLocation = false
   console.log('[Asul] Mocking disabled; real geolocation will resume')
+}
+
+// DevTools helper: simulate movement along a path (array of [lat,lng] or {lat:,lng:})
+// Usage: window.__mockMove([[lat,lng],[lat,lng],...], intervalMs=800, loop=false)
+// Returns an id you can pass to window.__stopMockMove(id) or call window.__stopMockMove() to stop the active mover.
+window.__mockMove = (path, intervalMs = 800, loop = false) => {
+  if (!Array.isArray(path) || path.length === 0) {
+    console.error('[Asul] __mockMove expects a non-empty array of points')
+    return null
+  }
+  // normalize path to [{lat, lng}, ...]
+  const pts = path.map((p) => {
+    if (Array.isArray(p) && p.length >= 2) return { latitude: Number(p[0]), longitude: Number(p[1]) }
+    if (p && typeof p === 'object') return { latitude: Number(p.lat ?? p.latitude), longitude: Number(p.lng ?? p.longitude) }
+    return null
+  }).filter(Boolean)
+  if (pts.length === 0) { console.error('[Asul] __mockMove: no valid points'); return null }
+
+  isMockingLocation = true
+  let idx = 0
+  const id = `mockmove_${Date.now()}_${Math.floor(Math.random()*1000)}`
+  // store active mover id on window so stop helper can clear without id
+  window.__activeMockMoveId = id
+
+  const tick = () => {
+    const p = pts[idx]
+    if (!p) return
+    // set userLocation and fire update hooks
+    userLocation = { latitude: p.latitude, longitude: p.longitude, altitude: null }
+    try {
+      if (typeof updateDebugInfo === 'function') updateDebugInfo()
+      if (typeof updateUserMarker === 'function') updateUserMarker()
+      if (typeof checkBuildingProximityDebounced === 'function') checkBuildingProximityDebounced()
+      if (typeof findNearestRestroom === 'function') findNearestRestroom()
+    } catch (e) {
+      console.warn('[Asul] Error while dispatching mock move updates', e)
+    }
+    idx += 1
+    if (idx >= pts.length) {
+      if (loop) idx = 0
+      else {
+        // stop automatic mover but keep mocking flag set so real geolocation is ignored until explicitly stopped
+        clearInterval(window.__mockMoveTimer)
+        window.__mockMoveTimer = null
+        window.__activeMockMoveId = null
+        return
+      }
+    }
+  }
+
+  // clear existing
+  try { if (window.__mockMoveTimer) { clearInterval(window.__mockMoveTimer); window.__mockMoveTimer = null } } catch (e) {}
+  // run initial tick immediately, then interval
+  tick()
+  window.__mockMoveTimer = setInterval(tick, Number(intervalMs) || 800)
+  console.log(`[Asul] __mockMove started (${id}), points=${pts.length}, interval=${intervalMs}ms, loop=${!!loop}`)
+  return id
+}
+
+// Stop the mock-move by id or stop the currently active mock move
+window.__stopMockMove = (id) => {
+  try {
+    if (id && window.__activeMockMoveId && id !== window.__activeMockMoveId) {
+      console.warn('[Asul] __stopMockMove: id does not match active mover')
+    }
+    if (window.__mockMoveTimer) {
+      clearInterval(window.__mockMoveTimer)
+      window.__mockMoveTimer = null
+    }
+    window.__activeMockMoveId = null
+    // Keep isMockingLocation true until user calls __stopMockLocation to allow manual control
+    console.log('[Asul] __stopMockMove: stopped simulated movement. To resume real geolocation, call window.__stopMockLocation()')
+  } catch (e) { console.warn('[Asul] __stopMockMove error', e) }
 }
 
 function stopWatchingLocation() {
@@ -663,8 +779,8 @@ function checkBuildingProximityDebounced() {
         enterConfirmToast.style.display = 'none'
         enterConfirmToast.setAttribute('aria-hidden', 'true')
       }
-      if (enterConfirmProgressCircle && pendingTimer.totalLength) {
-        try { enterConfirmProgressCircle.style.strokeDashoffset = pendingTimer.totalLength } catch (e) {}
+      if (enterConfirmProgressCircle) {
+        try { const total = enterConfirmProgressCircle.getTotalLength(); enterConfirmProgressCircle.style.strokeDashoffset = total } catch (e) {}
       }
       buildingEnterTimers.delete(building)
     } else if (!inside && confirmedInside) {
@@ -975,6 +1091,67 @@ function initMap() {
       map.setView(center, 16)
 
       markersLayer = L.layerGroup().addTo(map)
+      // map interaction: when user interacts, disable auto-follow and schedule resume
+      const onUserInteraction = () => {
+        try {
+          // user interacted: disable following
+          isFollowing = false
+          // clear any existing resume/countdown timers
+          try { if (followResumeTimer) { clearTimeout(followResumeTimer); followResumeTimer = null } } catch (e) {}
+          try { if (followResumeInterval) { clearInterval(followResumeInterval); followResumeInterval = null } } catch (e) {}
+          try { if (showCountdownDebounceTimer) { clearTimeout(showCountdownDebounceTimer); showCountdownDebounceTimer = null } } catch (e) {}
+
+          // start auto-resume countdown: show pan progress bar and update label
+          const panEl = document.getElementById('panProgress')
+          const panLabel = document.getElementById('panProgressLabel')
+          followResumeStart = Date.now()
+          const delay = FOLLOW_RESUME_DELAY
+          if (panEl) {
+            try {
+              panEl.classList.add('show')
+              panEl.setAttribute('aria-hidden', 'false')
+              panEl.style.transition = `width ${delay/1000}s linear, opacity 0.2s ease`
+              panEl.style.width = '6%'
+              setTimeout(() => { try { panEl.style.width = '96%' } catch (e) {} }, 20)
+            } catch (e) {}
+          }
+
+          // interval to update remaining seconds label
+          followResumeInterval = setInterval(() => {
+            try {
+              const remainingMs = Math.max(0, (followResumeStart + delay) - Date.now())
+              const secs = Math.ceil(remainingMs / 1000)
+              if (panLabel) panLabel.textContent = `${secs}s`
+            } catch (e) {}
+          }, 250)
+
+          // schedule resume
+          followResumeTimer = setTimeout(() => {
+            try {
+              if (userLocation && map) {
+                // pan to user and re-enable follow
+                safePanTo(Number(userLocation.latitude), Number(userLocation.longitude), 0.45, true)
+                isFollowing = true
+              }
+              // cleanup UI
+              if (panEl) {
+                try { panEl.style.width = '100%' } catch (e) {}
+                setTimeout(() => { try { panEl.classList.remove('show'); panEl.style.width = '0%'; panEl.setAttribute('aria-hidden', 'true') } catch (e) {} }, 160)
+              }
+            } catch (e) {}
+            try { if (followResumeInterval) { clearInterval(followResumeInterval); followResumeInterval = null } } catch (e) {}
+            followResumeTimer = null
+          }, delay)
+        } catch (e) {}
+      }
+      // user gestures that should cancel follow
+      map.on('movestart', onUserInteraction)
+      map.on('zoomstart', onUserInteraction)
+      map.on('dragstart', onUserInteraction)
+      map.on('mousedown', onUserInteraction)
+      map.on('touchstart', onUserInteraction)
+      // pan progress element reference
+      const panProgressEl = document.getElementById('panProgress')
       // Ensure map resizes correctly when container or window size changes
       window.addEventListener('resize', () => {
         try { if (map) setTimeout(() => map.invalidateSize(), 120) } catch (e) {}
@@ -983,6 +1160,32 @@ function initMap() {
   } catch (e) {
     console.warn("[Asul] initMap failed:", e)
   }
+}
+
+// Smooth pan helper that shows a small progress indicator
+function safePanTo(lat, lng, durationSec = 0.45, showProgress = false) {
+  if (!map) return
+  try {
+    map.panTo([lat, lng], { animate: true, duration: durationSec })
+  } catch (e) {}
+  // animate pan progress bar
+  if (!showProgress) return
+  try {
+    const el = document.getElementById('panProgress')
+    if (!el) return
+    el.classList.add('show')
+    // trigger width transition: reset then set to 90-100%
+    el.style.transition = `width ${durationSec}s linear, opacity 0.2s ease`
+    // start from 6% to give a moving feel
+    el.style.width = '6%'
+    // allow next tick then expand
+    setTimeout(() => { try { el.style.width = '96%' } catch (e) {} }, 20)
+    // finish shortly after duration
+    setTimeout(() => {
+      try { el.style.width = '100%' } catch (e) {}
+      setTimeout(() => { try { el.classList.remove('show'); el.style.width = '0%' } catch (e) {} }, 160)
+    }, durationSec * 1000)
+  } catch (e) {}
 }
 
 // Add all restroom markers from csData
@@ -1072,24 +1275,61 @@ function updateUserMarker() {
   const lat = Number(userLocation.latitude)
   const lng = Number(userLocation.longitude)
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return
+  // compute bearing: prefer device heading, fallback to movement bearing
+  let bearing = null
+  if (userLocation.heading !== null && Number.isFinite(userLocation.heading)) {
+    bearing = userLocation.heading
+  } else if (prevUserLocation && Number.isFinite(prevUserLocation.latitude) && Number.isFinite(prevUserLocation.longitude)) {
+    bearing = calculateBearing(prevUserLocation.latitude, prevUserLocation.longitude, lat, lng)
+  }
 
+  const isDark = document.body.classList.contains('dark-theme')
+
+  // create or update a modern divIcon marker showing direction
+  const markerHtml = `<div class="user-marker-outer"><div class="user-marker-arrow" style="transform: rotate(${bearing || 0}deg)"></div></div>`
   if (userMarker) {
-    userMarker.setLatLng([lat, lng])
+    if (userMarker.setLatLng) userMarker.setLatLng([lat, lng])
+    if (userMarker.getElement) {
+      const el = userMarker.getElement()
+      if (el) {
+        const arrow = el.querySelector('.user-marker-arrow')
+        if (arrow) arrow.style.transform = `rotate(${bearing || 0}deg)`
+      }
+    }
   } else {
-    userMarker = L.circleMarker([lat, lng], {
-      radius: 7,
-      color: "#ff0000",
-      weight: 2,
-      fillColor: "#ff0000",
-      fillOpacity: 1,
-    }).addTo(map)
+    const icon = L.divIcon({ className: 'user-marker', html: markerHtml, iconSize: [36, 36], iconAnchor: [18, 18] })
+    userMarker = L.marker([lat, lng], { icon }).addTo(map)
   }
 
-  // center map on user once
-  if (!userCentered) {
-    map.setView([lat, lng], 18)
-    userCentered = true
+  // Pan map to follow user movements only when follow button is active
+  try {
+    if (isFollowing && map) safePanTo(lat, lng, 0.45, false)
+  } catch (e) {}
+  // update short textual direction for UI
+  if (directionShort) {
+    try { directionShort.textContent = bearing !== null ? degToCardinal(bearing) : '-' } catch (e) {}
   }
+}
+
+// Calculate bearing (degrees) from point A to B
+function calculateBearing(lat1, lon1, lat2, lon2) {
+  const toRad = (d) => (d * Math.PI) / 180
+  const toDeg = (r) => (r * 180) / Math.PI
+  const φ1 = toRad(lat1)
+  const φ2 = toRad(lat2)
+  const Δλ = toRad(lon2 - lon1)
+  const y = Math.sin(Δλ) * Math.cos(φ2)
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ)
+  const θ = Math.atan2(y, x)
+  let brng = (toDeg(θ) + 360) % 360
+  return brng
+}
+
+function degToCardinal(deg) {
+  if (deg === null || typeof deg !== 'number' || !Number.isFinite(deg)) return '-'
+  const directions = ['北','东北','东','东南','南','西南','西','西北']
+  const ix = Math.round(deg / 45) % 8
+  return directions[ix]
 }
 
 function clearMapMarkers() {
@@ -1161,6 +1401,17 @@ function renderRestroomsList() {
   restroomsList.innerHTML = ""
   // Show ALL restrooms (do not filter by the top selection)
   const all = csData.slice()
+  // If we have a user location, compute distances and sort by closest first. Restrooms without coords go to the end.
+  if (userLocation) {
+    all.forEach((r) => {
+      if (Number.isFinite(r.经度) && Number.isFinite(r.纬度)) {
+        r._distanceForSort = calculateDistance(userLocation.latitude, userLocation.longitude, r.纬度, r.经度)
+      } else {
+        r._distanceForSort = Number.POSITIVE_INFINITY
+      }
+    })
+    all.sort((a, b) => (a._distanceForSort || 0) - (b._distanceForSort || 0))
+  }
 
   // Update total count badge
   if (restroomsCount) restroomsCount.textContent = `${all.length}`
@@ -1184,7 +1435,7 @@ function renderRestroomsList() {
 
     let distanceText = ""
       if (userLocation && Number.isFinite(restroom.经度) && Number.isFinite(restroom.纬度)) {
-        const distance = calculateDistance(userLocation.latitude, userLocation.longitude, restroom.纬度, restroom.经度)
+        const distance = restroom._distanceForSort !== undefined && isFinite(restroom._distanceForSort) ? restroom._distanceForSort : calculateDistance(userLocation.latitude, userLocation.longitude, restroom.纬度, restroom.经度)
         const color = getDistanceColor(distance)
         distanceText = `<span class="restroom-distance" style="color: ${color}; font-weight: 600;">${Math.round(distance)}M</span>`
       }
@@ -1226,6 +1477,8 @@ function renderRestroomsList() {
 
     restroomsList.appendChild(button)
   })
+  // clean up temporary sorting key to avoid mutating source objects
+  all.forEach((r) => { try { delete r._distanceForSort } catch (e) {} })
 }
 
 // Select a restroom

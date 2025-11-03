@@ -39,8 +39,13 @@
             </div>
 
             <div class="map-container">
+                <!-- 自动跟随模式：UI 中不展示手动切换按钮 -->
                 <!-- Leaflet 地图容器 -->
                 <div id="map" aria-label="校园地图"></div>
+                <!-- Small pan progress indicator (shows when map is auto-panning) -->
+                <div id="panProgress" class="pan-progress" aria-hidden="true" title="地图移动中">
+                    <span id="panProgressLabel" class="pan-progress-label">10s</span>
+                </div>
                 <!-- Enter confirmation toast shown during debounce countdown: SVG circular progress + accessible label -->
                 <div id="enterConfirmToast" class="enter-confirm-toast" aria-hidden="true" aria-live="polite">
                     <div class="progress-wrap" role="status">
@@ -74,6 +79,11 @@
                 <div class="detail-item">
                     <span class="detail-label">经纬度坐标：</span>
                     <span class="detail-value" id="coordinates">-</span>
+                    <button id="copyCoordinatesBtn" class="copy-btn" title="复制经纬度坐标" aria-label="复制经纬度坐标">复制</button>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">朝向：</span>
+                    <span class="detail-value" id="directionShort">-</span>
                 </div>
                 <div class="detail-item">
                     <span class="detail-label">备注：</span>
