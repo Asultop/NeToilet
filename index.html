@@ -41,6 +41,16 @@
             <div class="map-container">
                 <!-- Leaflet 地图容器 -->
                 <div id="map" aria-label="校园地图"></div>
+                <!-- Enter confirmation toast shown during debounce countdown: SVG circular progress + accessible label -->
+                <div id="enterConfirmToast" class="enter-confirm-toast" aria-hidden="true" aria-live="polite">
+                    <div class="progress-wrap" role="status">
+                        <svg class="enter-progress" viewBox="0 0 36 36" width="56" height="56" aria-hidden="true">
+                            <circle class="bg" cx="18" cy="18" r="15" fill="none" stroke-width="3"></circle>
+                            <circle id="enterConfirmProgressCircle" class="progress" cx="18" cy="18" r="15" fill="none" stroke-width="3" stroke-linecap="round" stroke-dasharray="94.2478" stroke-dashoffset="94.2478"></circle>
+                        </svg>
+                        <span class="sr-only" id="enterConfirmLabel">即将确认进入 <span id="enterConfirmBuilding"></span> (<span id="enterConfirmSeconds">3</span>s)</span>
+                    </div>
+                </div>
             </div>
 
             <!-- Details Card (仍保留，用于展示点击标注或选中后的详细信息) -->
@@ -129,6 +139,21 @@
                 </div>
                 <div class="modal-buttons">
                     <button class="btn-primary" id="confirmFloor">确认</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Enter building modal: show when user walks into a building circle -->
+        <div class="modal" id="enterBuildingModal">
+            <div class="modal-content">
+                <h3 id="enterBuildingTitle">检测到进入楼宇</h3>
+                <div id="enterBuildingBody" style="margin-top:8px; font-size:14px; color:var(--text-secondary);">
+                    正在为您查找该楼宇从一楼到顶楼是否存在卫生间…
+                </div>
+                <div id="enterBuildingMatches" style="margin-top:12px; display:flex;flex-direction:column;gap:8px;"></div>
+                <div class="modal-buttons" style="margin-top:12px;">
+                    <button class="btn-primary" id="enterBuildingGo">前往</button>
+                    <button class="btn-secondary" id="enterBuildingCancel">取消</button>
                 </div>
             </div>
         </div>

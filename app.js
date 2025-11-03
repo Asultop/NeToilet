@@ -18,6 +18,15 @@ let userCentered = false // whether we've centered the map on user yet
 let selectedBuildingForModal = null
 let pendingMatchedRestroom = null
 let matchPending = false
+// Map bookkeeping
+let buildingCircles = new Map() // buildingName -> Leaflet circle
+let buildingCenters = new Map() // buildingName -> {lat,lng,radius}
+let watchId = null
+let buildingInside = new Map() // buildingName -> boolean (whether user currently inside)
+let lastHighlightedBuilding = null
+let buildingEnterTimers = new Map() // buildingName -> { timeoutId, intervalId } for debounce/countdown
+let watchStartedOnce = false
+let isMockingLocation = false
 
 // DOM Elements
 const campusSelect = document.getElementById("campusSelect")
@@ -35,6 +44,16 @@ const chooseRestroomModal = document.getElementById("chooseRestroomModal")
 const chooseRestroomList = document.getElementById("chooseRestroomList")
 const cancelChooseRestroom = document.getElementById("cancelChooseRestroom")
 const locationModal = document.getElementById("locationModal")
+const enterBuildingModal = document.getElementById("enterBuildingModal")
+const enterBuildingTitle = document.getElementById("enterBuildingTitle")
+const enterBuildingBody = document.getElementById("enterBuildingBody")
+const enterBuildingMatches = document.getElementById("enterBuildingMatches")
+const enterBuildingGo = document.getElementById("enterBuildingGo")
+const enterBuildingCancel = document.getElementById("enterBuildingCancel")
+const enterConfirmToast = document.getElementById("enterConfirmToast")
+const enterConfirmProgressCircle = document.getElementById("enterConfirmProgressCircle")
+const enterConfirmBuildingLabel = document.getElementById("enterConfirmBuilding")
+const enterConfirmSeconds = document.getElementById("enterConfirmSeconds")
 const floorModal = document.getElementById("floorModal")
 const manualFloorSelect = document.getElementById("manualFloorSelect")
 const debugLatitude = document.getElementById("debugLatitude")
@@ -46,11 +65,12 @@ const noRestroomModal = document.getElementById("noRestroomModal")
 async function init() {
   console.log("[Asul] Initializing app...")
   await loadData()
+  // Initialize theme first so map markers/circles use correct theme colors
+  initializeTheme()
   // Initialize map and add building markers (use linkerData)
   initMap()
   addBuildingMarkersToMap()
   setupEventListeners()
-  initializeTheme()
   requestLocationPermission()
 }
 
@@ -71,6 +91,15 @@ function toggleTheme() {
   const newTheme = currentTheme === "light-theme" ? "dark-theme" : "light-theme"
   document.body.className = newTheme
   localStorage.setItem("theme", newTheme)
+  // re-style building circles to match theme
+  try {
+    const isDark = document.body.classList.contains('dark-theme')
+    const strokeColor = isDark ? '#60cdff' : '#0078d4'
+    buildingCircles.forEach((c) => {
+      if (c && c.setStyle) c.setStyle({ color: strokeColor, fillColor: strokeColor })
+    })
+    if (map) setTimeout(() => map.invalidateSize(), 120)
+  } catch (e) {}
 }
 
 function updateDebugInfo() {
@@ -96,6 +125,17 @@ async function loadData() {
     linkerData = linker
     csData = cs
 
+    // Normalize cs coordinates: if values appear swapped (纬度 outside [-90,90]), swap 经度/纬度
+    csData.forEach((r) => {
+      if (r && Number.isFinite(r.纬度) && Number.isFinite(r.经度)) {
+        // if 纬度 is implausible (> 90 or < -90) but 经度 is plausible (>90), swap
+        if (r.纬度 > 90 || r.纬度 < -90) {
+          const tmp = r.纬度
+          r.纬度 = r.经度
+          r.经度 = tmp
+        }
+      }
+    })
     console.log("[Asul] Data loaded successfully")
     populateCampusSelect()
     // ensure combo boxes reflect loaded data
@@ -457,7 +497,238 @@ function startLocating() {
   if (locating) locating.style.display = "block"
   // Ensure modal remains visible while locating
   if (!locationModal.classList.contains("show")) locationModal.classList.add("show")
-  getUserLocation()
+  // Start continuous location watch so we can trigger enter events with debounce
+  startWatchingLocation()
+}
+
+// Start continuous watch of user position with watchPosition
+function startWatchingLocation() {
+  if (!("geolocation" in navigator)) return
+  if (watchId !== null) return
+  watchId = navigator.geolocation.watchPosition(
+    (position) => {
+      // If developer mocking is active, ignore real geolocation updates so mock location remains
+      if (isMockingLocation) return
+      userLocation = {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        altitude: position.coords.altitude,
+      }
+      updateDebugInfo()
+      updateUserMarker()
+      // On first successful fix, close locating modal similar to one-shot flow
+      if (!watchStartedOnce) {
+        const perm = document.getElementById("permissionState")
+        const locating = document.getElementById("locatingState")
+        setTimeout(() => {
+          if (locating) locating.style.display = "none"
+          if (perm) perm.style.display = "block"
+          if (locationModal && locationModal.classList) locationModal.classList.remove("show")
+        }, 600)
+        watchStartedOnce = true
+      }
+      // proximity check with debounce
+      checkBuildingProximityDebounced()
+      // update nearest suggestion
+      findNearestRestroom()
+    },
+    (err) => {
+      console.warn('[Asul] watchPosition error', err)
+    },
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 },
+  )
+}
+
+// DevTools helper: set a mock location from console and suspend real geolocation updates
+window.__mockLocation = function (lat, lng) {
+  if (typeof lat !== 'number' || typeof lng !== 'number') {
+    console.error('[Asul] __mockLocation expects numeric lat,lng')
+    return
+  }
+  isMockingLocation = true
+  userLocation = { latitude: lat, longitude: lng, altitude: null }
+  console.log(`[Asul] Mocking location set to ${lat}, ${lng}`)
+  try {
+    if (typeof updateDebugInfo === 'function') updateDebugInfo()
+    if (typeof updateUserMarker === 'function') updateUserMarker()
+    if (typeof checkBuildingProximityDebounced === 'function') checkBuildingProximityDebounced()
+    if (typeof findNearestRestroom === 'function') findNearestRestroom()
+  } catch (e) {
+    console.warn('[Asul] Error while applying mock location updates', e)
+  }
+}
+
+// Stop mocking and allow real geolocation to resume
+window.__stopMockLocation = function () {
+  isMockingLocation = false
+  console.log('[Asul] Mocking disabled; real geolocation will resume')
+}
+
+function stopWatchingLocation() {
+  if (watchId !== null && navigator.geolocation && navigator.geolocation.clearWatch) {
+    navigator.geolocation.clearWatch(watchId)
+    watchId = null
+  }
+}
+
+// 5s debounce enter detection: require user to remain inside circle for 5s
+function checkBuildingProximityDebounced() {
+  if (!userLocation) return
+  const now = Date.now()
+  // iterate centers
+  buildingCenters.forEach((center, building) => {
+    const d = calculateDistance(userLocation.latitude, userLocation.longitude, center.lat, center.lng)
+    const inside = d <= (Number(center.radius) || 30)
+    const confirmedInside = !!buildingInside.get(building)
+    const pendingTimer = buildingEnterTimers.get(building)
+
+    if (inside && !confirmedInside && !pendingTimer) {
+      // start 3s timer to confirm, and show circular progress toast
+      const duration = 3000
+      const startTime = Date.now()
+      // show toast
+      if (enterConfirmToast) {
+        if (enterConfirmBuildingLabel) enterConfirmBuildingLabel.textContent = building
+        if (enterConfirmSeconds) enterConfirmSeconds.textContent = Math.ceil(duration / 1000)
+        enterConfirmToast.style.display = 'block'
+        enterConfirmToast.setAttribute('aria-hidden', 'false')
+      }
+
+      // if SVG circle exists, animate stroke-dashoffset; otherwise fallback to text countdown
+      if (enterConfirmProgressCircle && typeof enterConfirmProgressCircle.getTotalLength === 'function') {
+        const total = enterConfirmProgressCircle.getTotalLength()
+        // ensure proper attributes
+        enterConfirmProgressCircle.style.strokeDasharray = total
+        enterConfirmProgressCircle.style.strokeDashoffset = total
+
+        const intervalId = setInterval(() => {
+          const elapsed = Date.now() - startTime
+          const frac = Math.min(1, elapsed / duration)
+          const offset = total * (1 - frac)
+          enterConfirmProgressCircle.style.strokeDashoffset = offset
+          if (enterConfirmSeconds) enterConfirmSeconds.textContent = Math.max(0, Math.ceil((duration - elapsed) / 1000))
+        }, 50)
+
+        const tid = setTimeout(() => {
+          // if still inside, mark confirmed and fire enter
+          const dd = calculateDistance(userLocation.latitude, userLocation.longitude, center.lat, center.lng)
+          if (dd <= (Number(center.radius) || 30)) {
+            buildingInside.set(building, true)
+            const linkerObj = linkerData.find((b) => b.楼宇 === building)
+            if (linkerObj) handleEnterBuilding(linkerObj)
+          }
+          // clear UI and timers
+          if (enterConfirmToast) {
+            enterConfirmToast.style.display = 'none'
+            enterConfirmToast.setAttribute('aria-hidden', 'true')
+          }
+          clearInterval(intervalId)
+          // reset dashoffset for next time
+          try { enterConfirmProgressCircle.style.strokeDashoffset = total } catch (e) {}
+          buildingEnterTimers.delete(building)
+        }, duration)
+
+        buildingEnterTimers.set(building, { timeoutId: tid, intervalId: intervalId })
+      } else {
+        // fallback: textual countdown every second
+        let seconds = 3
+        if (enterConfirmToast) {
+          enterConfirmToast.textContent = `即将确认进入 ${building} （${seconds}s）`
+          enterConfirmToast.style.display = 'block'
+          enterConfirmToast.setAttribute('aria-hidden', 'false')
+        }
+        const intervalId = setInterval(() => {
+          seconds -= 1
+          if (enterConfirmToast) enterConfirmToast.textContent = `即将确认进入 ${building} （${seconds}s）`
+        }, 1000)
+        const tid = setTimeout(() => {
+          const dd = calculateDistance(userLocation.latitude, userLocation.longitude, center.lat, center.lng)
+          if (dd <= (Number(center.radius) || 30)) {
+            buildingInside.set(building, true)
+            const linkerObj = linkerData.find((b) => b.楼宇 === building)
+            if (linkerObj) handleEnterBuilding(linkerObj)
+          }
+          if (enterConfirmToast) { enterConfirmToast.style.display = 'none'; enterConfirmToast.setAttribute('aria-hidden', 'true') }
+          clearInterval(intervalId)
+          buildingEnterTimers.delete(building)
+        }, duration)
+        buildingEnterTimers.set(building, { timeoutId: tid, intervalId: intervalId })
+      }
+    } else if (!inside && pendingTimer) {
+      // left before 3s: cancel timer and hide toast
+      if (pendingTimer.timeoutId) clearTimeout(pendingTimer.timeoutId)
+      if (pendingTimer.intervalId) clearInterval(pendingTimer.intervalId)
+      // hide and reset progress UI
+      if (enterConfirmToast) {
+        enterConfirmToast.style.display = 'none'
+        enterConfirmToast.setAttribute('aria-hidden', 'true')
+      }
+      if (enterConfirmProgressCircle && pendingTimer.totalLength) {
+        try { enterConfirmProgressCircle.style.strokeDashoffset = pendingTimer.totalLength } catch (e) {}
+      }
+      buildingEnterTimers.delete(building)
+    } else if (!inside && confirmedInside) {
+      // user has left after being inside - update state silently
+      buildingInside.set(building, false)
+      // ensure any pending timer cleared
+      if (pendingTimer) { if (pendingTimer.timeoutId) clearTimeout(pendingTimer.timeoutId); if (pendingTimer.intervalId) clearInterval(pendingTimer.intervalId); buildingEnterTimers.delete(building) }
+    }
+    // if inside and already confirmedInside -> nothing (we don't re-trigger)
+  })
+}
+
+// Handle when user is confirmed to have entered a building (after debounce)
+let pendingEnterRestroom = null
+function handleEnterBuilding(buildingObj) {
+  if (!enterBuildingModal) return
+  enterBuildingTitle.textContent = `进入楼宇：${buildingObj.楼宇}`
+  enterBuildingBody.textContent = `检测到您进入 ${buildingObj.楼宇}，正在从一楼到 ${buildingObj.总楼层数} 楼查找是否存在卫生间...`
+  enterBuildingMatches.innerHTML = ''
+
+  const restroomsInBuilding = csData.filter((r) => r.楼宇 === buildingObj.楼宇)
+  if (restroomsInBuilding.length === 0) {
+    const p = document.createElement('div')
+    p.textContent = '未找到已记录的卫生间。'
+    enterBuildingMatches.appendChild(p)
+    pendingEnterRestroom = null
+  } else {
+    // choose nearest by distance to user if possible
+    let nearest = restroomsInBuilding[0]
+    if (userLocation && restroomsInBuilding.some((r) => Number.isFinite(r.经度) && Number.isFinite(r.纬度))) {
+      let minDist = Number.POSITIVE_INFINITY
+      restroomsInBuilding.forEach((r) => {
+        if (Number.isFinite(r.经度) && Number.isFinite(r.纬度)) {
+          const d = calculateDistance(userLocation.latitude, userLocation.longitude, r.纬度, r.经度)
+          if (d < minDist) { minDist = d; nearest = r }
+        }
+      })
+    }
+    // show a short summary and store pending
+    const info = document.createElement('div')
+    info.innerHTML = `${nearest.校区 || '-'} · ${nearest.楼宇 || '-'} · ${nearest.楼层 || '-'}楼 · ${nearest.卫生间属性 || '-'} · ${nearest.附近的房间号 || ''}`
+    enterBuildingMatches.appendChild(info)
+    pendingEnterRestroom = nearest
+  }
+
+  // show modal
+  enterBuildingModal.classList.add('show')
+
+  // wire buttons
+  if (enterBuildingGo) {
+    enterBuildingGo.onclick = () => {
+      if (pendingEnterRestroom) selectRestroom(pendingEnterRestroom)
+      const c = buildingCircles.get(buildingObj.楼宇)
+      if (c) c.setStyle({ color: '#10b981', fillColor: '#10b981' })
+      enterBuildingModal.classList.remove('show')
+    }
+  }
+  if (enterBuildingCancel) {
+    enterBuildingCancel.onclick = () => {
+      const c = buildingCircles.get(buildingObj.楼宇)
+      if (c) c.setStyle({ color: '#10b981', fillColor: '#10b981' })
+      enterBuildingModal.classList.remove('show')
+    }
+  }
 }
 
 // Find nearest restroom based on location
@@ -696,12 +967,18 @@ function initMap() {
     // create map
     if (!map && typeof L !== "undefined") {
       map = L.map("map", { zoomControl: true })
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      // Use Esri World Imagery (satellite) tiles by default for better satellite view
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics',
+        maxZoom: 19,
       }).addTo(map)
       map.setView(center, 16)
 
       markersLayer = L.layerGroup().addTo(map)
+      // Ensure map resizes correctly when container or window size changes
+      window.addEventListener('resize', () => {
+        try { if (map) setTimeout(() => map.invalidateSize(), 120) } catch (e) {}
+      })
     }
   } catch (e) {
     console.warn("[Asul] initMap failed:", e)
@@ -764,17 +1041,26 @@ function addBuildingMarkersToMap() {
         }
       })
       markersLayer.addLayer(marker)
+  // record building center for proximity checks
+  buildingCenters.set(b.楼宇, { lat, lng, radius: Number(b.半径) || 30 })
 
-      // draw scope circle with light opacity
+      // draw scope circle with light opacity; choose colors to suit current theme
       const radius = Number(b.半径) || 30
+      const isDark = document.body.classList.contains('dark-theme')
+      const strokeColor = isDark ? '#60cdff' : '#0078d4'
+      const fillColor = strokeColor
+      const fillOpacity = isDark ? 0.08 : 0.06
       const circle = L.circle([lat, lng], {
         radius: radius,
-        color: "#0078d4",
+        color: strokeColor,
         weight: 1,
-        fillColor: "#0078d4",
-        fillOpacity: 0.06,
+        fillColor: fillColor,
+        fillOpacity: fillOpacity,
+        className: 'building-circle',
       })
       markersLayer.addLayer(circle)
+      // keep reference for later color updates / detection
+      buildingCircles.set(b.楼宇, circle)
     } catch (e) {
       // ignore per-building errors
     }
@@ -965,6 +1251,25 @@ function selectRestroom(restroom) {
   // Update display with animation
   updateDetailsCard(restroom)
   renderRestroomsList()
+
+  // update building circle color: reset previous and mark this building green
+  try {
+    if (lastHighlightedBuilding && buildingCircles.has(lastHighlightedBuilding)) {
+      const prev = buildingCircles.get(lastHighlightedBuilding)
+      prev.setStyle({ color: '#0078d4', fillColor: '#0078d4' })
+    }
+    if (restroom && buildingCircles.has(restroom.楼宇)) {
+      const circle = buildingCircles.get(restroom.楼宇)
+      circle.setStyle({ color: '#10b981', fillColor: '#10b981' })
+      lastHighlightedBuilding = restroom.楼宇
+    }
+    // optionally center map on restroom
+    if (map && Number.isFinite(restroom.纬度) && Number.isFinite(restroom.经度)) {
+      map.setView([restroom.纬度, restroom.经度], Math.max(map.getZoom(), 18))
+    }
+  } catch (e) {
+    console.warn('[Asul] update circle color failed', e)
+  }
 
   // Scroll to top smoothly
   window.scrollTo({ top: 0, behavior: "smooth" })
