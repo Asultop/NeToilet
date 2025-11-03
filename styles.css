@@ -164,14 +164,14 @@ body {
 
 /* Fluent-style map control (top-right) */
 .map-control-card {
+  /* Remove any visible card background so the button sits directly on the map */
   background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-card);
-  padding: 6px;
-  border-radius: 8px;
-  box-shadow: var(--shadow-sm);
+  padding: 0;
+  border-radius: 0;
+  box-shadow: none;
   margin: 6px;
 }
 .map-control-card .map-control-btn {

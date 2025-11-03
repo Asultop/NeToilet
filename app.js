@@ -366,6 +366,20 @@ function setupEventListeners() {
 
   document.getElementById("allowLocation").addEventListener("click", () => {
     startLocating()
+    // Also request a one-time current position and center the map immediately when available
+    try {
+      if (navigator.geolocation && navigator.geolocation.getCurrentPosition) {
+        navigator.geolocation.getCurrentPosition((position) => {
+          try {
+            const lat = Number(position.coords.latitude)
+            const lng = Number(position.coords.longitude)
+            if (Number.isFinite(lat) && Number.isFinite(lng) && map) {
+              try { map.setView([lat, lng], Math.max(map.getZoom(), 18)) } catch (e) {}
+            }
+          } catch (e) { /* ignore */ }
+        }, (err) => { /* ignore one-shot error, watchPosition will handle updates */ }, { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 })
+      }
+    } catch (e) {}
   })
 
   document.getElementById("denyLocation").addEventListener("click", () => {
@@ -1074,7 +1088,7 @@ function initMap() {
             btn.type = 'button'
             btn.title = '定位到我'
             btn.setAttribute('aria-label', '定位到我')
-            btn.innerHTML = '<span class="map-control-label">定位</span>'
+            btn.innerHTML = '<span class="map-control-label">恢复视图</span>'
             L.DomEvent.disableClickPropagation(container)
             L.DomEvent.on(btn, 'click', (e) => {
               L.DomEvent.stopPropagation(e)
@@ -1459,8 +1473,14 @@ function selectRestroom(restroom) {
     console.warn('[Asul] update circle color failed', e)
   }
 
-  // Scroll to top smoothly
-  window.scrollTo({ top: 0, behavior: "smooth" })
+  // Bring details card into view and center it (avoid jumping to page top)
+  try {
+    if (detailsCard && detailsCard.scrollIntoView) {
+      detailsCard.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+  } catch (e) { /* ignore scroll errors */ }
 }
 
 function getDistanceColor(distance) {
