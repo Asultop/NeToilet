@@ -1,4 +1,4 @@
-// Data storage
+// 数据存储
 let buildingList = []
 let linkerData = []
 let csData = []
@@ -9,33 +9,42 @@ const currentSelection = {
   restroom: null,
 }
 let userLocation = null
-let pendingNearestRestroom = null // used when inside a building to remember the closest restroom
-// Map related
+let pendingNearestRestroom = null // 在进入楼宇时用于记住最近的卫生间
+// 地图相关
 let map = null
 let markersLayer = null
 let userMarker = null
-let userCentered = false // whether we've centered the map on user yet
+let userCentered = false // 是否已将地图初次居中到用户位置
 let selectedBuildingForModal = null
 let pendingMatchedRestroom = null
 let matchPending = false
-// Map bookkeeping
-let buildingCircles = new Map() // buildingName -> Leaflet circle
-let buildingCenters = new Map() // buildingName -> {lat,lng,radius}
+// 地图管理数据结构
+let buildingCircles = new Map() // 楼宇名称 -> Leaflet 圆圈对象
+let buildingCenters = new Map() // 楼宇名称 -> {lat,lng,radius}
 let watchId = null
-let buildingInside = new Map() // buildingName -> boolean (whether user currently inside)
+let buildingInside = new Map() // 楼宇名称 -> boolean （用户是否在楼宇内）
 let lastHighlightedBuilding = null
-let buildingEnterTimers = new Map() // buildingName -> { timeoutId, intervalId } for debounce/countdown
+let buildingEnterTimers = new Map() // 楼宇名称 -> { timeoutId, intervalId }（进入检测的防抖/倒计时）
 let watchStartedOnce = false
 let isMockingLocation = false
+// 上一次用户位置（用于计算移动方向）
 let prevUserLocation = null
-let isFollowing = true
-let followResumeTimer = null
-const FOLLOW_RESUME_DELAY = 10000 // ms of inactivity before resuming follow
-let followResumeInterval = null
-let followResumeStart = null
-let showCountdownDebounceTimer = null
+// 是否允许自动跟随（保持 false，自动跟随功能已移除，改为手动“定位到我”控件）
+let autoFollowEnabled = false
+// 在模态打开时，缓存最后一次位置更新，模态关闭后一次性应用
+let pendingLocationUpdate = null
+let pendingLocationProcessing = false
+let locationResumeTimer = null
+// Modal 变化观察者（用于在模态关闭时触发挂起位置的应用）
+let modalObserver = null
 
-// DOM Elements
+// 用于缓存并重用“所有卫生间”列表的按钮，避免在每次位置刷新时重建 DOM 导致闪烁
+const restroomButtonCache = new Map()
+
+// 地图控件引用（右上 Fluent 控件）
+let recenterControlButton = null
+
+// DOM 元素引用
 const campusSelect = document.getElementById("campusSelect")
 const buildingSelect = document.getElementById("buildingSelect")
 const floorSelect = document.getElementById("floorSelect")
@@ -43,7 +52,7 @@ const restroomType = document.getElementById("restroomType")
 const locationShort = document.getElementById("locationShort")
 const roomNumber = document.getElementById("roomNumber")
 const locationDesc = document.getElementById("locationDesc")
-const coordinates = document.getElementById("coordinates") // Added coordinates element
+const coordinates = document.getElementById("coordinates") // 坐标显示元素
 const notes = document.getElementById("notes")
 const restroomsList = document.getElementById("restroomsList")
 const restroomsCount = document.getElementById("restroomsCount")
@@ -61,9 +70,7 @@ const enterConfirmToast = document.getElementById("enterConfirmToast")
 const enterConfirmProgressCircle = document.getElementById("enterConfirmProgressCircle")
 const enterConfirmBuildingLabel = document.getElementById("enterConfirmBuilding")
 const enterConfirmSeconds = document.getElementById("enterConfirmSeconds")
-const copyCoordinatesBtn = document.getElementById("copyCoordinatesBtn")
 const directionShort = document.getElementById("directionShort")
-const locateBtn = document.getElementById("locateBtn")
 const floorModal = document.getElementById("floorModal")
 const manualFloorSelect = document.getElementById("manualFloorSelect")
 const debugLatitude = document.getElementById("debugLatitude")
@@ -82,6 +89,8 @@ async function init() {
   addBuildingMarkersToMap()
   setupEventListeners()
   requestLocationPermission()
+  // Start observing modals so we can apply pending location updates when modals close
+  try { setupModalObserver() } catch (e) { /* ignore */ }
 }
 
 // Initialize theme
@@ -122,13 +131,47 @@ function updateDebugInfo() {
   }
 }
 
-function updateLocateButtonVisual() {
+// Return true when a blocking modal (any modal except the location permission/locating modal)
+// is currently open. We exclude the `locationModal` so the locating flow still works.
+function isModalOpenBlocking() {
+  const modals = document.querySelectorAll('.modal.show')
+  for (const m of modals) {
+    if (!m) continue
+    if (m.id === 'locationModal') continue
+    return true
+  }
+  return false
+}
+
+// Apply any pending (cached) location update that was deferred while modal(s) were open
+function applyPendingLocation() {
+  if (!pendingLocationUpdate) return
   try {
-    if (!locateBtn) return
-    locateBtn.setAttribute('aria-pressed', isFollowing ? 'true' : 'false')
-    if (isFollowing) locateBtn.classList.add('active')
-    else locateBtn.classList.remove('active')
-  } catch (e) {}
+    userLocation = pendingLocationUpdate
+    pendingLocationUpdate = null
+    updateDebugInfo()
+    updateUserMarker()
+    checkBuildingProximityDebounced()
+    findNearestRestroom()
+  } catch (e) {
+    console.warn('[Asul] applyPendingLocation failed', e)
+  }
+}
+
+// Observe modal class changes and when no blocking modal remains, apply pending location
+function setupModalObserver() {
+  if (modalObserver) return
+  try {
+    const observer = new MutationObserver(() => {
+      if (!isModalOpenBlocking() && pendingLocationUpdate) applyPendingLocation()
+    })
+    document.querySelectorAll('.modal').forEach((m) => {
+      observer.observe(m, { attributes: true, attributeFilter: ['class'] })
+    })
+    modalObserver = observer
+  } catch (e) {
+    console.warn('[Asul] setupModalObserver failed', e)
+  }
 }
 
 // Load data from JSON files
@@ -433,25 +476,7 @@ function setupEventListeners() {
     return
   })
 
-  // copy coordinates button handler
-  if (copyCoordinatesBtn) {
-    copyCoordinatesBtn.addEventListener('click', async () => {
-      try {
-        const txt = coordinates ? coordinates.textContent : ''
-        if (!txt || txt === '-' || txt.toLowerCase().includes('无')) return
-        await navigator.clipboard.writeText(txt)
-        // simple feedback: change button text briefly
-        const prev = copyCoordinatesBtn.textContent
-        copyCoordinatesBtn.textContent = '已复制'
-        setTimeout(() => { try { copyCoordinatesBtn.textContent = prev } catch (e) {} }, 1200)
-      } catch (e) {
-        console.warn('[Asul] 复制坐标失败', e)
-      }
-    })
-  }
-
-  // locate button handler
-  // Follow control removed: app uses automatic follow with auto-resume after inactivity
+  // copy-coordinates control removed per UX decision
 
   document.getElementById("confirmNoRestroom").addEventListener("click", () => {
     noRestroomModal.classList.remove("show")
@@ -558,6 +583,12 @@ function startWatchingLocation() {
         speed: (typeof position.coords.speed === 'number' && !Number.isNaN(position.coords.speed)) ? position.coords.speed : null,
       }
       updateDebugInfo()
+      // If a blocking modal is open (any modal except the location/locating modal),
+      // defer processing of this location update to avoid interrupting the user's selection.
+      if (isModalOpenBlocking()) {
+        pendingLocationUpdate = { ...userLocation }
+        return
+      }
       updateUserMarker()
       // On first successful fix, close locating modal similar to one-shot flow
       if (!watchStartedOnce) {
@@ -605,79 +636,6 @@ window.__mockLocation = function (lat, lng) {
 window.__stopMockLocation = function () {
   isMockingLocation = false
   console.log('[Asul] Mocking disabled; real geolocation will resume')
-}
-
-// DevTools helper: simulate movement along a path (array of [lat,lng] or {lat:,lng:})
-// Usage: window.__mockMove([[lat,lng],[lat,lng],...], intervalMs=800, loop=false)
-// Returns an id you can pass to window.__stopMockMove(id) or call window.__stopMockMove() to stop the active mover.
-window.__mockMove = (path, intervalMs = 800, loop = false) => {
-  if (!Array.isArray(path) || path.length === 0) {
-    console.error('[Asul] __mockMove expects a non-empty array of points')
-    return null
-  }
-  // normalize path to [{lat, lng}, ...]
-  const pts = path.map((p) => {
-    if (Array.isArray(p) && p.length >= 2) return { latitude: Number(p[0]), longitude: Number(p[1]) }
-    if (p && typeof p === 'object') return { latitude: Number(p.lat ?? p.latitude), longitude: Number(p.lng ?? p.longitude) }
-    return null
-  }).filter(Boolean)
-  if (pts.length === 0) { console.error('[Asul] __mockMove: no valid points'); return null }
-
-  isMockingLocation = true
-  let idx = 0
-  const id = `mockmove_${Date.now()}_${Math.floor(Math.random()*1000)}`
-  // store active mover id on window so stop helper can clear without id
-  window.__activeMockMoveId = id
-
-  const tick = () => {
-    const p = pts[idx]
-    if (!p) return
-    // set userLocation and fire update hooks
-    userLocation = { latitude: p.latitude, longitude: p.longitude, altitude: null }
-    try {
-      if (typeof updateDebugInfo === 'function') updateDebugInfo()
-      if (typeof updateUserMarker === 'function') updateUserMarker()
-      if (typeof checkBuildingProximityDebounced === 'function') checkBuildingProximityDebounced()
-      if (typeof findNearestRestroom === 'function') findNearestRestroom()
-    } catch (e) {
-      console.warn('[Asul] Error while dispatching mock move updates', e)
-    }
-    idx += 1
-    if (idx >= pts.length) {
-      if (loop) idx = 0
-      else {
-        // stop automatic mover but keep mocking flag set so real geolocation is ignored until explicitly stopped
-        clearInterval(window.__mockMoveTimer)
-        window.__mockMoveTimer = null
-        window.__activeMockMoveId = null
-        return
-      }
-    }
-  }
-
-  // clear existing
-  try { if (window.__mockMoveTimer) { clearInterval(window.__mockMoveTimer); window.__mockMoveTimer = null } } catch (e) {}
-  // run initial tick immediately, then interval
-  tick()
-  window.__mockMoveTimer = setInterval(tick, Number(intervalMs) || 800)
-  console.log(`[Asul] __mockMove started (${id}), points=${pts.length}, interval=${intervalMs}ms, loop=${!!loop}`)
-  return id
-}
-
-// Stop the mock-move by id or stop the currently active mock move
-window.__stopMockMove = (id) => {
-  try {
-    if (id && window.__activeMockMoveId && id !== window.__activeMockMoveId) {
-      console.warn('[Asul] __stopMockMove: id does not match active mover')
-    }
-    if (window.__mockMoveTimer) {
-      clearInterval(window.__mockMoveTimer)
-      window.__mockMoveTimer = null
-    }
-    window.__activeMockMoveId = null
-    // Keep isMockingLocation true until user calls __stopMockLocation to allow manual control
-    console.log('[Asul] __stopMockMove: stopped simulated movement. To resume real geolocation, call window.__stopMockLocation()')
-  } catch (e) { console.warn('[Asul] __stopMockMove error', e) }
 }
 
 function stopWatchingLocation() {
@@ -1091,67 +1049,47 @@ function initMap() {
       map.setView(center, 16)
 
       markersLayer = L.layerGroup().addTo(map)
-      // map interaction: when user interacts, disable auto-follow and schedule resume
-      const onUserInteraction = () => {
-        try {
-          // user interacted: disable following
-          isFollowing = false
-          // clear any existing resume/countdown timers
-          try { if (followResumeTimer) { clearTimeout(followResumeTimer); followResumeTimer = null } } catch (e) {}
-          try { if (followResumeInterval) { clearInterval(followResumeInterval); followResumeInterval = null } } catch (e) {}
-          try { if (showCountdownDebounceTimer) { clearTimeout(showCountdownDebounceTimer); showCountdownDebounceTimer = null } } catch (e) {}
+      // 简化用户交互：我们移除自动“恢复自动跟随”的倒计时与自动 pan 行为。
+      // 交互处理只记录是否处于交互状态，自动跟随保持关闭，由用户手动触发“定位到我”按钮。
+      let isUserInteracting = false
+      const onInteractionStart = () => { try { isUserInteracting = true; autoFollowEnabled = false } catch (e) {} }
+      const onInteractionEnd = () => { try { isUserInteracting = false } catch (e) {} }
+      map.on('movestart', onInteractionStart)
+      map.on('moveend', onInteractionEnd)
+      map.on('dragstart', onInteractionStart)
+      map.on('dragend', onInteractionEnd)
+      map.on('zoomstart', onInteractionStart)
+      map.on('zoomend', onInteractionEnd)
+      map.on('mousedown', onInteractionStart)
+      map.on('mouseup', onInteractionEnd)
+      map.on('touchstart', onInteractionStart)
+      map.on('touchend', onInteractionEnd)
 
-          // start auto-resume countdown: show pan progress bar and update label
-          const panEl = document.getElementById('panProgress')
-          const panLabel = document.getElementById('panProgressLabel')
-          followResumeStart = Date.now()
-          const delay = FOLLOW_RESUME_DELAY
-          if (panEl) {
-            try {
-              panEl.classList.add('show')
-              panEl.setAttribute('aria-hidden', 'false')
-              panEl.style.transition = `width ${delay/1000}s linear, opacity 0.2s ease`
-              panEl.style.width = '6%'
-              setTimeout(() => { try { panEl.style.width = '96%' } catch (e) {} }, 20)
-            } catch (e) {}
-          }
-
-          // interval to update remaining seconds label
-          followResumeInterval = setInterval(() => {
-            try {
-              const remainingMs = Math.max(0, (followResumeStart + delay) - Date.now())
-              const secs = Math.ceil(remainingMs / 1000)
-              if (panLabel) panLabel.textContent = `${secs}s`
-            } catch (e) {}
-          }, 250)
-
-          // schedule resume
-          followResumeTimer = setTimeout(() => {
-            try {
+      // Add a Fluent-style manual recenter control at top-right
+      try {
+        const RecenterControl = L.Control.extend({
+          onAdd: function (map) {
+            const container = L.DomUtil.create('div', 'map-control-card leaflet-bar')
+            const btn = L.DomUtil.create('button', 'map-control-btn', container)
+            btn.type = 'button'
+            btn.title = '定位到我'
+            btn.setAttribute('aria-label', '定位到我')
+            btn.innerHTML = '<span class="map-control-label">定位</span>'
+            L.DomEvent.disableClickPropagation(container)
+            L.DomEvent.on(btn, 'click', (e) => {
+              L.DomEvent.stopPropagation(e)
               if (userLocation && map) {
-                // pan to user and re-enable follow
-                safePanTo(Number(userLocation.latitude), Number(userLocation.longitude), 0.45, true)
-                isFollowing = true
+                try { map.setView([Number(userLocation.latitude), Number(userLocation.longitude)], map.getZoom()) } catch (e) {}
+              } else {
+                try { requestLocationPermission() } catch (e) {}
               }
-              // cleanup UI
-              if (panEl) {
-                try { panEl.style.width = '100%' } catch (e) {}
-                setTimeout(() => { try { panEl.classList.remove('show'); panEl.style.width = '0%'; panEl.setAttribute('aria-hidden', 'true') } catch (e) {} }, 160)
-              }
-            } catch (e) {}
-            try { if (followResumeInterval) { clearInterval(followResumeInterval); followResumeInterval = null } } catch (e) {}
-            followResumeTimer = null
-          }, delay)
-        } catch (e) {}
-      }
-      // user gestures that should cancel follow
-      map.on('movestart', onUserInteraction)
-      map.on('zoomstart', onUserInteraction)
-      map.on('dragstart', onUserInteraction)
-      map.on('mousedown', onUserInteraction)
-      map.on('touchstart', onUserInteraction)
-      // pan progress element reference
-      const panProgressEl = document.getElementById('panProgress')
+            })
+            recenterControlButton = btn
+            return container
+          },
+        })
+        map.addControl(new RecenterControl({ position: 'topright' }))
+      } catch (e) { console.warn('[Asul] failed to add recenter control', e) }
       // Ensure map resizes correctly when container or window size changes
       window.addEventListener('resize', () => {
         try { if (map) setTimeout(() => map.invalidateSize(), 120) } catch (e) {}
@@ -1167,25 +1105,7 @@ function safePanTo(lat, lng, durationSec = 0.45, showProgress = false) {
   if (!map) return
   try {
     map.panTo([lat, lng], { animate: true, duration: durationSec })
-  } catch (e) {}
-  // animate pan progress bar
-  if (!showProgress) return
-  try {
-    const el = document.getElementById('panProgress')
-    if (!el) return
-    el.classList.add('show')
-    // trigger width transition: reset then set to 90-100%
-    el.style.transition = `width ${durationSec}s linear, opacity 0.2s ease`
-    // start from 6% to give a moving feel
-    el.style.width = '6%'
-    // allow next tick then expand
-    setTimeout(() => { try { el.style.width = '96%' } catch (e) {} }, 20)
-    // finish shortly after duration
-    setTimeout(() => {
-      try { el.style.width = '100%' } catch (e) {}
-      setTimeout(() => { try { el.classList.remove('show'); el.style.width = '0%' } catch (e) {} }, 160)
-    }, durationSec * 1000)
-  } catch (e) {}
+  } catch (e) { console.warn('[Asul] safePanTo failed', e) }
 }
 
 // Add all restroom markers from csData
@@ -1301,10 +1221,7 @@ function updateUserMarker() {
     userMarker = L.marker([lat, lng], { icon }).addTo(map)
   }
 
-  // Pan map to follow user movements only when follow button is active
-  try {
-    if (isFollowing && map) safePanTo(lat, lng, 0.45, false)
-  } catch (e) {}
+  // 自动跟随行为已移除；地图只在用户点击“定位到我”按钮时手动居中。
   // update short textual direction for UI
   if (directionShort) {
     try { directionShort.textContent = bearing !== null ? degToCardinal(bearing) : '-' } catch (e) {}
@@ -1398,7 +1315,7 @@ function clearDetailsCard() {
 
 // Render restrooms list
 function renderRestroomsList() {
-  restroomsList.innerHTML = ""
+  // Do not clear innerHTML to avoid DOM flicker; reuse cached buttons when possible
   // Show ALL restrooms (do not filter by the top selection)
   const all = csData.slice()
   // If we have a user location, compute distances and sort by closest first. Restrooms without coords go to the end.
@@ -1430,27 +1347,24 @@ function renderRestroomsList() {
         // Additional logic to visually mark the restroom can be added here
       }
 
-    const button = document.createElement("button")
-    button.className = "restroom-btn fade-in"
-
-    let distanceText = ""
-      if (userLocation && Number.isFinite(restroom.经度) && Number.isFinite(restroom.纬度)) {
-        const distance = restroom._distanceForSort !== undefined && isFinite(restroom._distanceForSort) ? restroom._distanceForSort : calculateDistance(userLocation.latitude, userLocation.longitude, restroom.纬度, restroom.经度)
-        const color = getDistanceColor(distance)
-        distanceText = `<span class="restroom-distance" style="color: ${color}; font-weight: 600;">${Math.round(distance)}M</span>`
-      }
-
-    button.innerHTML = `
+    // build stable key for caching
+    const key = `${restroom.校区}||${restroom.楼宇}||${restroom.楼层}||${restroom.卫生间属性}`
+    let button = restroomButtonCache.get(key)
+    let created = false
+    if (!button) {
+      button = document.createElement("button")
+      button.className = "restroom-btn fade-in"
+      button.innerHTML = `
             <div class="restroom-info">
                 <span class="restroom-tag">${restroom.校区}</span>
                 <span class="restroom-tag">${restroom.楼宇}</span>
                 <span class="restroom-tag">${restroom.楼层}楼</span>
                 <span class="restroom-tag">${restroom.卫生间属性}</span>
             </div>
-            ${distanceText}
+            <span class="restroom-distance">-</span>
         `
-
-    button.addEventListener("click", () => {
+      // attach click handler once
+      button.addEventListener("click", () => {
       // If there are multiple restroom entries that share campus/building/floor, ask user to choose
       const matches = csData.filter((r) => r.校区 === restroom.校区 && r.楼宇 === restroom.楼宇 && r.楼层 === restroom.楼层)
       if (matches.length > 1) {
@@ -1474,7 +1388,28 @@ function renderRestroomsList() {
         selectRestroom(restroom)
       }
     })
+      restroomButtonCache.set(key, button)
+      created = true
+    }
 
+    // Update distance text in-place to avoid replacing the node
+    try {
+      const distEl = button.querySelector('.restroom-distance')
+      if (distEl) {
+        if (userLocation && Number.isFinite(restroom.经度) && Number.isFinite(restroom.纬度)) {
+          const distance = restroom._distanceForSort !== undefined && isFinite(restroom._distanceForSort) ? restroom._distanceForSort : calculateDistance(userLocation.latitude, userLocation.longitude, restroom.纬度, restroom.经度)
+          const color = getDistanceColor(distance)
+          distEl.textContent = `${Math.round(distance)}M`
+          distEl.style.color = color
+          distEl.style.fontWeight = '600'
+        } else {
+          distEl.textContent = '-'
+          distEl.style.color = ''
+          distEl.style.fontWeight = ''
+        }
+      }
+    } catch (e) {}
+    // append (or move) into the list in correct order. Using appendChild with existing node will move it.
     restroomsList.appendChild(button)
   })
   // clean up temporary sorting key to avoid mutating source objects
@@ -1530,8 +1465,8 @@ function selectRestroom(restroom) {
 
 function getDistanceColor(distance) {
   // Define distance thresholds (in meters)
-  const nearThreshold = 50 // Green for distances <= 50m
-  const farThreshold = 200 // Red for distances >= 200m
+  const nearThreshold = 150 // Green for distances <= 150m
+  const farThreshold = 500 // Red for distances >= 500m
 
   if (distance <= nearThreshold) {
     // Green
