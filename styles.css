@@ -211,6 +211,50 @@ body.dark-theme .map-control-card.leaflet-bar {
 }
 .map-control-card .map-control-label { font-size: 13px }
 
+/* Floor suggestions inside floor modal */
+.floor-suggestions { border-radius: 8px; overflow: hidden; border: 1px solid rgba(0,0,0,0.04); background: var(--bg-card); box-shadow: var(--shadow-sm); }
+.floor-suggestions .floor-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; }
+.floor-suggestions .floor-row strong { margin-right: 8px; }
+.restroom-sel-btn { background: transparent; border: 1px solid rgba(0,0,0,0.06); padding: 6px 8px; border-radius: 6px; cursor: pointer; color: var(--text-primary); }
+.restroom-sel-btn:hover { background: rgba(0,0,0,0.04); }
+
+/* Priority color markers for floor suggestion rows */
+.floor-row.floor-priority-green { background: linear-gradient(90deg, rgba(16,185,129,0.06), rgba(16,185,129,0.02)); border-left: 4px solid #10b981; }
+.floor-row.floor-priority-yellow { background: linear-gradient(90deg, rgba(234,179,8,0.06), rgba(234,179,8,0.02)); border-left: 4px solid #eab308; }
+.floor-row.floor-priority-red { background: linear-gradient(90deg, rgba(239,68,68,0.06), rgba(239,68,68,0.02)); border-left: 4px solid #ef4444; }
+
+/* Make the left label more prominent and add spacing for the colored badge */
+.floor-row > div:first-child { display:flex; align-items:center; gap:10px; font-size:14px }
+
+/* Big Toilet Info button to replace/augment the old confirm button */
+.big-toilet-btn {
+  display: inline-block;
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #ffffff;
+  background: linear-gradient(180deg, #0078d4, #005a9e);
+  border: none;
+  border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.big-toilet-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(0,0,0,0.22); }
+.big-toilet-btn:active { transform: translateY(0); }
+
+/* Adjust for dark theme */
+body.dark-theme .big-toilet-btn { background: linear-gradient(180deg, #60cdff, #3aa3d2); color: #051923 }
+
+/* Floor item (clickable) styles */
+.floor-item { cursor: pointer; transition: background 0.12s ease, transform 0.06s ease; }
+.floor-item:hover { background: rgba(0,0,0,0.04); transform: translateY(-2px); }
+.floor-item .restroom-distance { font-weight: 600; color: var(--text-secondary); }
+
+/* Hide the old floor match panel by default visual rule (JS also hides it) */
+#floorMatchResult { display: none !important; }
+
 @media (max-width: 480px) {
   #map {
     /* on small screens take most of viewport but leave room for lists */

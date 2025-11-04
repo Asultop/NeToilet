@@ -58,6 +58,7 @@ const coordinates = document.getElementById("coordinates") // 坐标显示元素
 const notes = document.getElementById("notes")
 const restroomsList = document.getElementById("restroomsList")
 const restroomsCount = document.getElementById("restroomsCount")
+const detailsCard = document.getElementById("detailsCard")
 const chooseRestroomModal = document.getElementById("chooseRestroomModal")
 const chooseRestroomList = document.getElementById("chooseRestroomList")
 const cancelChooseRestroom = document.getElementById("cancelChooseRestroom")
@@ -263,6 +264,23 @@ function populateCampusSelect() {
     option.textContent = item.校区
     campusSelect.appendChild(option)
   })
+
+  // modal floor select (manual) -> render suggestions table when a floor is picked
+  manualFloorSelect.addEventListener("change", (e) => {
+    const val = Number.parseInt(e.target.value)
+    if (Number.isFinite(val)) {
+      renderFloorSuggestions(currentSelection.building, val)
+    } else {
+      // render all restrooms for current building (show full list) when no specific floor selected
+      if (currentSelection.building) {
+        renderFloorSuggestions(currentSelection.building, null)
+      } else {
+        // clear suggestions container if present
+        const c = document.getElementById('floorSuggestionsContainer')
+        if (c) c.innerHTML = ''
+      }
+    }
+  })
 }
 
 // Populate building dropdown based on campus
@@ -317,6 +335,153 @@ function syncComboBoxes() {
   manualFloorSelect.value = currentSelection.floor ? String(currentSelection.floor) : ""
 }
 
+// Render a floor-suggestion table inside the floor modal.
+// Shows rows grouped by floor relative to selectedFloor: order 0, -1, -2, ... , +1, +2, ...
+function renderFloorSuggestions(buildingName, selectedFloor) {
+  try {
+    const containerId = 'floorSuggestionsContainer'
+    let container = document.getElementById(containerId)
+    const fm = document.getElementById('floorMatchResult')
+    if (!container) {
+      // create a container under fm (or inside modal content)
+      container = document.createElement('div')
+      container.id = containerId
+      container.style.marginTop = '12px'
+      container.style.display = 'block'
+      if (fm && fm.parentNode) fm.parentNode.insertBefore(container, fm.nextSibling)
+    }
+    // clear
+    container.innerHTML = ''
+
+    if (!buildingName) return
+
+    const buildingData = linkerData.find((b) => b.楼宇 === buildingName)
+    const maxFloors = buildingData && Number.isFinite(Number(buildingData.总楼层数)) ? Number(buildingData.总楼层数) : 50
+
+    // gather restrooms grouped by floor
+    const restroomsInBuilding = csData.filter((r) => r.楼宇 === buildingName)
+    if (restroomsInBuilding.length === 0) {
+      container.textContent = '该楼宇暂无已记录的卫生间'
+      return
+    }
+
+    // determine unique floors that have restrooms
+    const floorsSet = new Set(restroomsInBuilding.map((r) => Number(r.楼层)).filter((n) => Number.isFinite(n)))
+    const floors = Array.from(floorsSet).sort((a, b) => a - b)
+
+    // helper to build label
+    const floorLabel = (diff) => {
+      if (diff === 0) return '当前层'
+      if (diff > 0) return `上${diff}层`
+      return `下${Math.abs(diff)}层`
+    }
+
+    // create table/list container
+    const table = document.createElement('div')
+    table.className = 'floor-suggestions'
+
+    // We'll render each restroom as a row with floor, relative label and details
+  // Determine a reference floor (selectedFloor > currentSelection.floor > pendingNearestRestroom.floor)
+  let cur = null
+  if (Number.isFinite(Number(selectedFloor))) cur = Number(selectedFloor)
+  else if (Number.isFinite(Number(currentSelection.floor))) cur = Number(currentSelection.floor)
+  else if (pendingNearestRestroom && Number.isFinite(Number(pendingNearestRestroom.楼层))) cur = Number(pendingNearestRestroom.楼层)
+    const items = []
+
+    restroomsInBuilding.forEach((m) => {
+      const floorNum = Number(m.楼层)
+      if (!Number.isFinite(floorNum)) return
+      const diff = cur !== null ? floorNum - cur : null
+      const absDiff = diff !== null ? Math.abs(diff) : Number.POSITIVE_INFINITY
+      let category = null
+      if (diff !== null) {
+        if (absDiff <= 1) category = 'green'
+        else if (absDiff === 2) category = 'yellow'
+        else category = 'red'
+      }
+
+      // compute distance if possible
+      let dist = Number.POSITIVE_INFINITY
+      if (userLocation && Number.isFinite(m.经度) && Number.isFinite(m.纬度)) {
+        try { dist = calculateDistance(userLocation.latitude, userLocation.longitude, m.纬度, m.经度) } catch (e) { dist = Number.POSITIVE_INFINITY }
+      }
+
+      items.push({ meta: m, floor: floorNum, diff, absDiff, category, dist })
+    })
+
+    // sort items by category priority then absDiff then distance
+    const priority = { green: 0, yellow: 1, red: 2 }
+    items.sort((a, b) => {
+      // if both have no category (no baseline), sort by floor asc then distance
+      if (a.category === null && b.category === null) {
+        if (a.floor !== b.floor) return a.floor - b.floor
+        return (a.dist || Number.POSITIVE_INFINITY) - (b.dist || Number.POSITIVE_INFINITY)
+      }
+      // if one has category and other does not, place the one with category first
+      if (a.category === null && b.category !== null) return 1
+      if (a.category !== null && b.category === null) return -1
+      // both have categories: use defined priority
+      if (priority[a.category] !== priority[b.category]) return priority[a.category] - priority[b.category]
+      if (a.absDiff !== b.absDiff) return a.absDiff - b.absDiff
+      return (a.dist || Number.POSITIVE_INFINITY) - (b.dist || Number.POSITIVE_INFINITY)
+    })
+
+    items.forEach((it) => {
+      const m = it.meta
+  const row = document.createElement('div')
+  const cls = 'floor-row floor-item' + (it.category ? ` floor-priority-${it.category}` : '')
+  row.className = cls
+      row.style.display = 'flex'
+      row.style.justifyContent = 'space-between'
+      row.style.alignItems = 'center'
+      row.style.padding = '8px 10px'
+
+      const left = document.createElement('div')
+      if (it.diff === null) {
+        left.innerHTML = `${it.floor}楼`
+      } else {
+        left.innerHTML = `<strong>${floorLabel(it.diff)}</strong> · ${it.floor}楼`
+      }
+
+      const right = document.createElement('div')
+      right.style.display = 'flex'
+      right.style.gap = '12px'
+      right.style.alignItems = 'center'
+
+      const info = document.createElement('div')
+      info.textContent = `${m.卫生间属性}${m.附近的房间号 ? ' · ' + m.附近的房间号 : ''}`
+
+      const distEl = document.createElement('div')
+      distEl.className = 'restroom-distance'
+      if (isFinite(it.dist)) {
+        distEl.textContent = `${Math.round(it.dist)}M`
+        distEl.style.color = getDistanceColor(it.dist)
+        distEl.style.fontWeight = '600'
+      } else {
+        distEl.textContent = '-' 
+      }
+
+      right.appendChild(info)
+      right.appendChild(distEl)
+
+      row.appendChild(left)
+      row.appendChild(right)
+
+      // clicking a row selects the restroom and closes modal
+      row.addEventListener('click', () => {
+        selectRestroom(m)
+        try { if (floorModal) floorModal.classList.remove('show') } catch (e) {}
+      })
+
+      table.appendChild(row)
+    })
+
+    container.appendChild(table)
+  } catch (e) {
+    console.warn('[Asul] renderFloorSuggestions failed', e)
+  }
+}
+
 // Populate floor dropdown based on building
 function populateFloorSelect(building) {
   floorSelect.innerHTML = '<option value="">选择楼层</option>'
@@ -335,11 +500,8 @@ function populateFloorSelect(building) {
 function setupEventListeners() {
   campusSelect.addEventListener("change", (e) => {
     const val = e.target.value
-    // Always update currentSelection.campus
     currentSelection.campus = val || ""
-
     if (!val) {
-      // Campus cleared: clear building and floor to defaults
       currentSelection.building = ""
       currentSelection.floor = null
       buildingSelect.innerHTML = '<option value="">选择楼宇</option>'
@@ -348,8 +510,6 @@ function setupEventListeners() {
       updateRestroomDisplay()
       return
     }
-
-    // New campus selected: populate buildings, clear downstream selections
     populateBuildingSelect(val)
     currentSelection.building = ""
     currentSelection.floor = null
@@ -362,17 +522,13 @@ function setupEventListeners() {
   buildingSelect.addEventListener("change", (e) => {
     const val = e.target.value
     currentSelection.building = val || ""
-
     if (!val) {
-      // Building cleared: reset floor to default
       currentSelection.floor = null
       floorSelect.innerHTML = '<option value="">选择楼层</option>'
       syncComboBoxes()
       updateRestroomDisplay()
       return
     }
-
-    // Building selected: populate floors and clear current floor selection
     populateFloorSelect(val)
     currentSelection.floor = null
     floorSelect.value = ""
@@ -380,17 +536,14 @@ function setupEventListeners() {
     updateRestroomDisplay()
   })
 
+  // floorSelect (page-level) changes
   floorSelect.addEventListener("change", (e) => {
     const val = Number.parseInt(e.target.value)
     currentSelection.floor = Number.isNaN(val) ? null : val
-    // First update display
     updateRestroomDisplay()
-
-    // If campus and building are selected, check if this floor has multiple restroom entries
     if (currentSelection.campus && currentSelection.building && currentSelection.floor) {
       const matches = csData.filter((r) => r.校区 === currentSelection.campus && r.楼宇 === currentSelection.building && r.楼层 === currentSelection.floor)
       if (matches.length > 1) {
-        // populate choose modal
         if (chooseRestroomList) chooseRestroomList.innerHTML = ""
         matches.forEach((m) => {
           const b = document.createElement("button")
@@ -405,11 +558,12 @@ function setupEventListeners() {
         })
         if (chooseRestroomModal) chooseRestroomModal.classList.add("show")
       } else if (matches.length === 1) {
-        // auto-select the single restroom on that floor
         selectRestroom(matches[0])
       }
     }
   })
+
+
 
   document.getElementById("allowLocation").addEventListener("click", () => {
     startLocating()
@@ -996,8 +1150,9 @@ function showRestroomsForBuilding(buildingObj, nearestRestroom) {
   floorSelect.value = currentSelection.floor ? String(currentSelection.floor) : ""
 
   if (nearestRestroom) {
-    currentSelection.restroom = nearestRestroom
-    updateDetailsCard(nearestRestroom)
+    // Instead of only showing the nearest restroom, render all restrooms for this building
+    currentSelection.restroom = null
+    renderBuildingDetails(buildingObj.楼宇)
   } else {
     currentSelection.restroom = null
     clearDetailsCard()
@@ -1007,6 +1162,91 @@ function showRestroomsForBuilding(buildingObj, nearestRestroom) {
   renderRestroomsList()
   // ensure all combo boxes reflect selection
   syncComboBoxes()
+}
+
+// Render all restrooms for a given building into the details card area
+function renderBuildingDetails(buildingName) {
+  try {
+    if (!buildingName) return
+    const restroomsInBuilding = csData.filter((r) => r.楼宇 === buildingName)
+    // Clear simple details fields first
+    locationShort.textContent = `${currentSelection.campus || '-'} · ${buildingName}`
+    restroomType.textContent = `${restroomsInBuilding.length} 个卫生间` 
+    roomNumber.textContent = '-'
+    locationDesc.textContent = '-'
+    coordinates.textContent = '-' 
+    notes.textContent = '-' 
+
+    // remove existing list if any
+    const existing = document.getElementById('detailsRestroomList')
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing)
+
+    const container = document.createElement('div')
+    container.id = 'detailsRestroomList'
+    container.style.marginTop = '10px'
+    container.style.display = 'flex'
+    container.style.flexDirection = 'column'
+    container.style.gap = '8px'
+
+    if (restroomsInBuilding.length === 0) {
+      const p = document.createElement('div')
+      p.textContent = '该楼宇暂无已记录的卫生间'
+      container.appendChild(p)
+    } else {
+      // sort by floor then by distance if available
+      restroomsInBuilding.forEach((r) => {
+        r._sortFloor = Number.isFinite(Number(r.楼层)) ? Number(r.楼层) : 9999
+        if (userLocation && Number.isFinite(r.经度) && Number.isFinite(r.纬度)) {
+          r._distForDetails = calculateDistance(userLocation.latitude, userLocation.longitude, r.纬度, r.经度)
+        } else {
+          r._distForDetails = Number.POSITIVE_INFINITY
+        }
+      })
+      restroomsInBuilding.sort((a, b) => {
+        if (a._sortFloor !== b._sortFloor) return a._sortFloor - b._sortFloor
+        return (a._distForDetails || Number.POSITIVE_INFINITY) - (b._distForDetails || Number.POSITIVE_INFINITY)
+      })
+
+      restroomsInBuilding.forEach((r) => {
+        const row = document.createElement('div')
+        row.className = 'detail-restroom-row'
+        row.style.display = 'flex'
+        row.style.justifyContent = 'space-between'
+        row.style.alignItems = 'center'
+        row.style.padding = '6px 8px'
+        row.style.borderBottom = '1px solid rgba(0,0,0,0.04)'
+
+        const left = document.createElement('div')
+        left.innerHTML = `<strong>${r.楼层}楼</strong> · ${r.卫生间属性}${r.附近的房间号 ? ' · ' + r.附近的房间号 : ''}`
+        const right = document.createElement('div')
+        right.style.textAlign = 'right'
+        if (Number.isFinite(r._distForDetails) && isFinite(r._distForDetails) && r._distForDetails !== Number.POSITIVE_INFINITY) {
+          right.textContent = `${Math.round(r._distForDetails)}M`
+          right.style.color = getDistanceColor(r._distForDetails)
+        } else {
+          right.textContent = '-'
+        }
+
+        row.appendChild(left)
+        row.appendChild(right)
+
+        row.addEventListener('click', () => {
+          selectRestroom(r)
+          // remove this list after selection
+          try { const ex = document.getElementById('detailsRestroomList'); if (ex) ex.remove() } catch (e) {}
+        })
+
+        container.appendChild(row)
+        // cleanup temp props
+        try { delete r._sortFloor; delete r._distForDetails } catch (e) {}
+      })
+    }
+
+    // append container to detailsCard
+    if (detailsCard) detailsCard.appendChild(container)
+  } catch (e) {
+    console.warn('[Asul] renderBuildingDetails failed', e)
+  }
 }
 
 // Show floor selection modal
@@ -1033,39 +1273,26 @@ function showFloorSelectionModal(building) {
   if (fmDetails) fmDetails.textContent = ""
   // reset confirm button
   const confirmBtn = document.getElementById("confirmFloor")
-  if (confirmBtn) confirmBtn.textContent = "确认"
+  if (confirmBtn) {
+    confirmBtn.textContent = "厕所信息"
+    confirmBtn.classList.add('big-toilet-btn')
+  }
   matchPending = false
 
   // Prepare initial building summary so the modal's lower result area shows association immediately
   const restroomsInBuilding = csData.filter((r) => r.楼宇 === building.楼宇)
-  if (fm && fmMsg && fmDetails) {
-    if (restroomsInBuilding.length === 0) {
-      fm.style.display = "block"
-      fmMsg.textContent = "该楼宇暂无已记录的卫生间"
-      fmDetails.textContent = `${currentSelection.campus || '-'} · ${building.楼宇} · -楼 · 无可用卫生间` 
-    } else {
-      // compute nearest restroom in this building (by distance) if userLocation exists
-      let nearest = restroomsInBuilding[0]
-      if (userLocation && restroomsInBuilding.some(r => Number.isFinite(r.经度) && Number.isFinite(r.纬度))) {
-        let minDist = Number.POSITIVE_INFINITY
-        restroomsInBuilding.forEach((r) => {
-          if (Number.isFinite(r.经度) && Number.isFinite(r.纬度)) {
-            const d = calculateDistance(userLocation.latitude, userLocation.longitude, r.纬度, r.经度)
-            if (d < minDist) { minDist = d; nearest = r }
-          }
-        })
-        fm.style.display = "block"
-        fmMsg.textContent = `该楼宇共有 ${restroomsInBuilding.length} 个卫生间，最近的在 ${nearest.楼层} 楼` 
-        const distText = Number.isFinite(minDist) ? `${Math.round(minDist)}M` : '未知'
-        fmDetails.textContent = `${currentSelection.campus || '-'} · ${building.楼宇} · ${nearest.楼层}楼 · ${nearest.卫生间属性 || '-'} · 距离您 ${distText}`
-      } else {
-        // No user location or coords: show count and example
-        fm.style.display = "block"
-        fmMsg.textContent = `该楼宇共有 ${restroomsInBuilding.length} 个卫生间` 
-        fmDetails.textContent = `${currentSelection.campus || '-'} · ${building.楼宇} · ${restroomsInBuilding[0].楼层}楼 · ${restroomsInBuilding[0].卫生间属性 || '-'} · 距离您 未知`
-      }
-    }
-  }
+  // We will not show the old intermediate match/info panel; instead render the full restroom list below the selector
+  try {
+    if (fm) fm.style.display = 'none'
+  } catch (e) {}
+
+  // hide the old confirm button (we list items directly and clicking an item selects it)
+  try {
+    if (confirmBtn) confirmBtn.style.display = 'none'
+  } catch (e) {}
+
+  // render suggestions/list for this building immediately
+  renderFloorSuggestions(building.楼宇, pendingNearestRestroom && pendingNearestRestroom.楼层 ? Number(pendingNearestRestroom.楼层) : (manualFloorSelect.value ? Number(manualFloorSelect.value) : null))
 
   floorModal.classList.add("show")
 }
