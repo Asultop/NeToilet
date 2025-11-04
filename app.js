@@ -40,6 +40,11 @@ let modalObserver = null
 // Timer used when waiting for an initial locating result (show failure after timeout)
 let locationTimeoutTimer = null
 
+// When the user first grants location permission, we allow one automatic
+// selection/fill of the nearest restroom. After that, location updates should
+// not reset the user's manual selection.
+let allowAutoSelectOnce = false
+
 // 用于缓存并重用“所有卫生间”列表的按钮，避免在每次位置刷新时重建 DOM 导致闪烁
 const restroomButtonCache = new Map()
 
@@ -381,11 +386,10 @@ function renderFloorSuggestions(buildingName, selectedFloor) {
     table.className = 'floor-suggestions'
 
     // We'll render each restroom as a row with floor, relative label and details
-  // Determine a reference floor (selectedFloor > currentSelection.floor > pendingNearestRestroom.floor)
+  // Determine a reference floor: ONLY use the explicitly provided selectedFloor.
+  // When the modal comboBox is "选择楼层" (no baseline), do not fall back to any other value.
   let cur = null
-  if (Number.isFinite(Number(selectedFloor))) cur = Number(selectedFloor)
-  else if (Number.isFinite(Number(currentSelection.floor))) cur = Number(currentSelection.floor)
-  else if (pendingNearestRestroom && Number.isFinite(Number(pendingNearestRestroom.楼层))) cur = Number(pendingNearestRestroom.楼层)
+  if (typeof selectedFloor === 'number' && Number.isFinite(selectedFloor)) cur = selectedFloor
     const items = []
 
     restroomsInBuilding.forEach((m) => {
@@ -409,18 +413,13 @@ function renderFloorSuggestions(buildingName, selectedFloor) {
       items.push({ meta: m, floor: floorNum, diff, absDiff, category, dist })
     })
 
-    // sort items by category priority then absDiff then distance
+    // sort items: if no baseline (cur === null), sort strictly by floor ascending.
+    // otherwise, sort by color priority then absDiff then distance.
     const priority = { green: 0, yellow: 1, red: 2 }
     items.sort((a, b) => {
-      // if both have no category (no baseline), sort by floor asc then distance
-      if (a.category === null && b.category === null) {
-        if (a.floor !== b.floor) return a.floor - b.floor
-        return (a.dist || Number.POSITIVE_INFINITY) - (b.dist || Number.POSITIVE_INFINITY)
+      if (cur === null) {
+        return a.floor - b.floor
       }
-      // if one has category and other does not, place the one with category first
-      if (a.category === null && b.category !== null) return 1
-      if (a.category !== null && b.category === null) return -1
-      // both have categories: use defined priority
       if (priority[a.category] !== priority[b.category]) return priority[a.category] - priority[b.category]
       if (a.absDiff !== b.absDiff) return a.absDiff - b.absDiff
       return (a.dist || Number.POSITIVE_INFINITY) - (b.dist || Number.POSITIVE_INFINITY)
@@ -438,7 +437,7 @@ function renderFloorSuggestions(buildingName, selectedFloor) {
 
       const left = document.createElement('div')
       if (it.diff === null) {
-        left.innerHTML = `${it.floor}楼`
+        left.innerHTML = `<span class="floor-index-badge">${it.floor}</span> ${it.floor}楼`
       } else {
         left.innerHTML = `<strong>${floorLabel(it.diff)}</strong> · ${it.floor}楼`
       }
@@ -566,6 +565,8 @@ function setupEventListeners() {
 
 
   document.getElementById("allowLocation").addEventListener("click", () => {
+    // allow one automatic selection after the user grants permission
+    allowAutoSelectOnce = true
     startLocating()
     // Also request a one-time current position and center the map immediately when available
     try {
@@ -1074,6 +1075,12 @@ function findNearestRestroom() {
     }
     const isInsideBuilding = distanceToBuilding <= nearestBuilding.半径
 
+    // If automatic one-time selection is not allowed anymore, do not override user selection
+    if (!allowAutoSelectOnce) {
+      // user has already been auto-filled (or we shouldn't auto-fill); avoid changing their choices
+      return
+    }
+
     // Find campus for this building
     for (const campus of buildingList) {
       if (campus.楼宇.includes(nearestBuilding.楼宇)) {
@@ -1082,6 +1089,15 @@ function findNearestRestroom() {
         populateBuildingSelect(campus.校区)
         break
       }
+    }
+
+    // If we already finished the first auto-select, do not override user's selection on further updates
+    if (!allowAutoSelectOnce) {
+      // Optionally refresh distance in details for currently selected restroom
+      if (currentSelection.restroom) {
+        updateDetailsCard(currentSelection.restroom)
+      }
+      return
     }
 
     currentSelection.building = nearestBuilding.楼宇
@@ -1105,16 +1121,11 @@ function findNearestRestroom() {
       })
     }
 
-    if (isInsideBuilding) {
-      // User is inside the building -> ask for floor selection
-      // Save the nearest restroom for use after floor selection
-      pendingNearestRestroom = nearestRestroom
-        showFloorSelectionModal(nearestBuilding)
-        // keep combo boxes in sync (modal will show manualFloorSelect)
-        syncComboBoxes()
+    // For the first authorization, directly select the nearest restroom and fill the info panel
+    if (nearestRestroom) {
+      selectRestroom(nearestRestroom)
     } else {
-      // User is outside building -> show restrooms for this building and select nearest if found
-      // Set campus and building selection, but do not force a floor selection so we can display all
+      // fallback: show building list if none found with coords
       showRestroomsForBuilding(nearestBuilding, nearestRestroom)
     }
   } else {
@@ -1122,6 +1133,8 @@ function findNearestRestroom() {
     currentSelection.floor = 1
     updateRestroomDisplay()
   }
+  // We consumed the one-time auto-select allowance
+  allowAutoSelectOnce = false
 }
 
 // Show restrooms filtered to the given building and highlight nearestRestroom (if provided)
@@ -1597,6 +1610,35 @@ function updateRestroomDisplay() {
 function updateDetailsCard(restroom) {
   // show campus · building · floor as a read-only line
   locationShort.textContent = `${restroom.校区 || '-'} · ${restroom.楼宇 || '-'} · ${restroom.楼层 || '-'}楼`
+  // update or create distance badge next to location
+  try {
+    let distText = null
+    let distColor = null
+    if (userLocation && Number.isFinite(restroom.经度) && Number.isFinite(restroom.纬度)) {
+      const d = calculateDistance(userLocation.latitude, userLocation.longitude, restroom.纬度, restroom.经度)
+      distText = `${Math.round(d)}M`
+      distColor = getDistanceColor(d)
+    }
+    let distEl = document.getElementById('locationDistance')
+    if (!distEl) {
+      distEl = document.createElement('span')
+      distEl.id = 'locationDistance'
+      distEl.style.marginLeft = '8px'
+      distEl.style.fontWeight = '600'
+      // append after locationShort element
+      if (locationShort && locationShort.parentElement) {
+        locationShort.parentElement.appendChild(distEl)
+      }
+    }
+    if (distText) {
+      distEl.textContent = `· 距您 ${distText}`
+      distEl.style.color = distColor || 'inherit'
+      distEl.style.display = 'inline'
+    } else {
+      distEl.textContent = ''
+      distEl.style.display = 'none'
+    }
+  } catch (e) { /* noop */ }
   restroomType.textContent = restroom.卫生间属性
   roomNumber.textContent = restroom.附近的房间号 || "无"
   locationDesc.textContent = restroom.具体位置描述 // Removed coordinate concatenation
@@ -1608,6 +1650,7 @@ function updateDetailsCard(restroom) {
 // Clear details card
 function clearDetailsCard() {
   locationShort.textContent = "-"
+  try { const distEl = document.getElementById('locationDistance'); if (distEl) { distEl.textContent=''; distEl.style.display='none' } } catch (e) {}
   restroomType.textContent = "请选择卫生间"
   roomNumber.textContent = "-"
   locationDesc.textContent = "-"

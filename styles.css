@@ -255,6 +255,23 @@ body.dark-theme .big-toilet-btn { background: linear-gradient(180deg, #60cdff, #
 /* Hide the old floor match panel by default visual rule (JS also hides it) */
 #floorMatchResult { display: none !important; }
 
+/* Badge used as index when no baseline ("选择楼层") */
+.floor-index-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  min-width: 20px;
+  padding: 0 6px;
+  margin-right: 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
 @media (max-width: 480px) {
   #map {
     /* on small screens take most of viewport but leave room for lists */
