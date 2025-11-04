@@ -1259,11 +1259,8 @@ function showFloorSelectionModal(building) {
     manualFloorSelect.appendChild(option)
   }
   // If we have a pending nearest restroom, pre-select its floor in the modal
-  if (pendingNearestRestroom && pendingNearestRestroom.楼层) {
-    manualFloorSelect.value = String(pendingNearestRestroom.楼层)
-  } else {
-    manualFloorSelect.value = ""
-  }
+  // Do NOT auto-preselect pendingNearestRestroom: always start in empty (选择楼层) state
+  manualFloorSelect.value = ""
   // reset match UI
   const fm = document.getElementById("floorMatchResult")
   const fmMsg = document.getElementById("floorMatchMessage")
@@ -1291,8 +1288,8 @@ function showFloorSelectionModal(building) {
     if (confirmBtn) confirmBtn.style.display = 'none'
   } catch (e) {}
 
-  // render suggestions/list for this building immediately
-  renderFloorSuggestions(building.楼宇, pendingNearestRestroom && pendingNearestRestroom.楼层 ? Number(pendingNearestRestroom.楼层) : (manualFloorSelect.value ? Number(manualFloorSelect.value) : null))
+  // render suggestions/list for this building immediately in no-baseline mode
+  renderFloorSuggestions(building.楼宇, null)
 
   floorModal.classList.add("show")
 }
