@@ -37,6 +37,8 @@ let pendingLocationProcessing = false
 let locationResumeTimer = null
 // Modal 变化观察者（用于在模态关闭时触发挂起位置的应用）
 let modalObserver = null
+// Timer used when waiting for an initial locating result (show failure after timeout)
+let locationTimeoutTimer = null
 
 // 用于缓存并重用“所有卫生间”列表的按钮，避免在每次位置刷新时重建 DOM 导致闪烁
 const restroomButtonCache = new Map()
@@ -171,6 +173,51 @@ function setupModalObserver() {
     modalObserver = observer
   } catch (e) {
     console.warn('[Asul] setupModalObserver failed', e)
+  }
+}
+
+// Create and show a simple modal telling the user locating failed with Retry/Cancel
+function showLocationFailedModal() {
+  try {
+    // If modal already exists, just ensure it's visible
+    let m = document.getElementById('locationFailedModal')
+    if (!m) {
+      m = document.createElement('div')
+      m.className = 'modal'
+      m.id = 'locationFailedModal'
+      m.innerHTML = `
+        <div class="modal-content">
+          <h3>定位失败</h3>
+          <p>无法获取位置信息。请检查设备定位设置或网络！</p>
+          <div class="modal-buttons">
+            <button class="btn-primary" id="retryLocateBtn">重试</button>
+            <button class="btn-secondary" id="cancelLocateBtn">取消</button>
+          </div>
+        </div>
+      `
+      document.body.appendChild(m)
+      // attach handlers
+      const retry = document.getElementById('retryLocateBtn')
+      const cancel = document.getElementById('cancelLocateBtn')
+      if (retry) retry.addEventListener('click', () => {
+        try { m.classList.remove('show') } catch (e) {}
+        try { m.remove() } catch (e) {}
+        // retry: start locating flow again
+        startLocating()
+      })
+      if (cancel) cancel.addEventListener('click', () => {
+        try { if (locationTimeoutTimer) { clearTimeout(locationTimeoutTimer); locationTimeoutTimer = null } } catch (e) {}
+        try { m.classList.remove('show') } catch (e) {}
+        try { m.remove() } catch (e) {}
+        // close the locating modal if shown and fallback to manual selection
+        try { if (locationModal && locationModal.classList) locationModal.classList.remove('show') } catch (e) {}
+        try { manualSelection(); updateRestroomDisplay() } catch (e) {}
+      })
+    }
+    // show it
+    setTimeout(() => { try { m.classList.add('show') } catch (e) {} }, 5)
+  } catch (e) {
+    console.warn('[Asul] showLocationFailedModal failed', e)
   }
 }
 
@@ -383,6 +430,8 @@ function setupEventListeners() {
   })
 
   document.getElementById("denyLocation").addEventListener("click", () => {
+    // clear any pending location timeout
+    try { if (locationTimeoutTimer) { clearTimeout(locationTimeoutTimer); locationTimeoutTimer = null } } catch (e) {}
     locationModal.classList.remove("show")
     manualSelection()
     updateRestroomDisplay()
@@ -577,6 +626,17 @@ function startLocating() {
   if (!locationModal.classList.contains("show")) locationModal.classList.add("show")
   // Start continuous location watch so we can trigger enter events with debounce
   startWatchingLocation()
+  // Start a one-time timeout: if no location fix within 10s, show failure modal
+  try {
+    if (locationTimeoutTimer) { clearTimeout(locationTimeoutTimer); locationTimeoutTimer = null }
+    locationTimeoutTimer = setTimeout(() => {
+      locationTimeoutTimer = null
+      // If still no fix and the locating modal is visible, show failure UI
+      if (!watchStartedOnce && locationModal && locationModal.classList && locationModal.classList.contains('show')) {
+        showLocationFailedModal()
+      }
+    }, 10000)
+  } catch (e) {}
 }
 
 // Start continuous watch of user position with watchPosition
@@ -606,12 +666,16 @@ function startWatchingLocation() {
       updateUserMarker()
       // On first successful fix, close locating modal similar to one-shot flow
       if (!watchStartedOnce) {
+        // clear locating timeout if any
+        try { if (locationTimeoutTimer) { clearTimeout(locationTimeoutTimer); locationTimeoutTimer = null } } catch (e) {}
         const perm = document.getElementById("permissionState")
         const locating = document.getElementById("locatingState")
         setTimeout(() => {
           if (locating) locating.style.display = "none"
           if (perm) perm.style.display = "block"
           if (locationModal && locationModal.classList) locationModal.classList.remove("show")
+          // if a locate-failed modal exists, remove it
+          try { const fm = document.getElementById('locationFailedModal'); if (fm) { fm.classList.remove('show'); fm.remove() } } catch (e) {}
         }, 600)
         watchStartedOnce = true
       }

@@ -174,6 +174,29 @@ body {
   box-shadow: none;
   margin: 6px;
 }
+
+/* Stronger rule to override Leaflet or theme rules that add a backdrop/card */
+.map-control-card.leaflet-bar {
+  /* Acrylic effect: semi-transparent + blur + subtle border and shadow */
+  background-color: rgba(255, 255, 255, 0.72) !important;
+  background: linear-gradient(rgba(255,255,255,0.72), rgba(255,255,255,0.64)) !important;
+  border: 1px solid rgba(0,0,0,0.06) !important;
+  box-shadow: var(--shadow-sm) !important;
+  padding: 6px !important;
+  border-radius: var(--radius-md) !important;
+  backdrop-filter: blur(8px) saturate(120%) !important;
+}
+
+/* Dark theme acrylic variant */
+body.dark-theme .map-control-card.leaflet-bar {
+  background-color: rgba(30, 30, 30, 0.64) !important;
+  background: linear-gradient(rgba(30,30,30,0.64), rgba(30,30,30,0.56)) !important;
+  border: 1px solid rgba(255,255,255,0.06) !important;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.36) !important;
+  backdrop-filter: blur(10px) saturate(120%) !important;
+  padding: 6px !important;
+  border-radius: var(--radius-md) !important;
+}
 .map-control-card .map-control-btn {
   background: transparent;
   border: none;
