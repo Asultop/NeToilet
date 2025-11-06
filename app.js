@@ -224,7 +224,7 @@ function showLocationFailedModal() {
       m.innerHTML = `
         <div class="modal-content">
           <h3>定位失败</h3>
-          <p>无法获取位置信息。请检查设备定位设置或网络！</p>
+          <p>无法获取位置 请检查设备定位设置或网络！</p>
           <div class="modal-buttons">
             <button class="btn-primary" id="retryLocateBtn">重试</button>
             <button class="btn-secondary" id="cancelLocateBtn">取消</button>
