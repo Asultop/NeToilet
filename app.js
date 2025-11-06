@@ -96,6 +96,8 @@ async function init() {
   initMap()
   addBuildingMarkersToMap()
   setupEventListeners()
+  // 安装模态窗口的通用行为（外部点击关闭、滚动不穿透等）
+  try { installModalBehaviors() } catch (e) { /* ignore */ }
   requestLocationPermission()
   // Start observing modals so we can apply pending location updates when modals close
   try { setupModalObserver() } catch (e) { /* ignore */ }
@@ -172,6 +174,11 @@ function setupModalObserver() {
   try {
     const observer = new MutationObserver(() => {
       if (!isModalOpenBlocking() && pendingLocationUpdate) applyPendingLocation()
+      // 根据是否存在任何显示中的模态，切换 body 的滚动锁定
+      try {
+        const anyOpen = !!document.querySelector('.modal.show')
+        document.body.classList.toggle('modal-open', anyOpen)
+      } catch (e) { /* ignore */ }
     })
     document.querySelectorAll('.modal').forEach((m) => {
       observer.observe(m, { attributes: true, attributeFilter: ['class'] })
@@ -180,6 +187,29 @@ function setupModalObserver() {
   } catch (e) {
     console.warn('[Asul] setupModalObserver failed', e)
   }
+}
+
+// 为模态窗口安装通用交互：
+// - 点击模态内容外区域关闭（不提交变更）；但“定位失败”的模态不启用该逻辑
+// - 防止触控滚动穿透到页面主体（配合 CSS 的 body.modal-open 与 overscroll-behavior）
+function installModalBehaviors() {
+  const modals = document.querySelectorAll('.modal')
+  modals.forEach((modal) => {
+    if (!modal || modal.dataset.outsideCloseBound === '1') return
+    // 定位失败的模态不绑定外部点击关闭
+    if (modal.id === 'locationFailedModal') return
+    // 仅当点击在遮罩层（而非 .modal-content 内部）时关闭
+    const onClick = (e) => {
+      try {
+        if (e.target === modal) {
+          modal.classList.remove('show')
+        }
+      } catch (err) { /* noop */ }
+    }
+    modal.addEventListener('click', onClick)
+    // 标记避免重复绑定
+    modal.dataset.outsideCloseBound = '1'
+  })
 }
 
 // Create and show a simple modal telling the user locating failed with Retry/Cancel
@@ -202,6 +232,8 @@ function showLocationFailedModal() {
         </div>
       `
       document.body.appendChild(m)
+      // 让观察者也能感知这个动态创建的模态，以便切换 body.modal-open
+      try { if (modalObserver) modalObserver.observe(m, { attributes: true, attributeFilter: ['class'] }) } catch (e) {}
       // attach handlers
       const retry = document.getElementById('retryLocateBtn')
       const cancel = document.getElementById('cancelLocateBtn')

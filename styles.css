@@ -18,6 +18,13 @@
   --radius-md: 8px;
   --radius-lg: 12px;
   --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  /* Scrollbar tokens */
+  --scrollbar-size: 10px;
+  --scrollbar-radius: 8px;
+  --scrollbar-track: rgba(0, 0, 0, 0.06);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.28);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.38);
+  --scrollbar-thumb-active: rgba(0, 0, 0, 0.46);
 }
 
 /* Dark Theme */
@@ -37,6 +44,11 @@
     --shadow-sm: 0 1.6px 3.6px rgba(0, 0, 0, 0.4), 0 0.3px 0.9px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 3.2px 7.2px rgba(0, 0, 0, 0.4), 0 0.6px 1.8px rgba(0, 0, 0, 0.3);
     --shadow-lg: 0 6.4px 14.4px rgba(0, 0, 0, 0.4), 0 1.2px 3.6px rgba(0, 0, 0, 0.3);
+    /* Dark auto theme scrollbar */
+    --scrollbar-track: rgba(255, 255, 255, 0.06);
+    --scrollbar-thumb: rgba(255, 255, 255, 0.24);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
+    --scrollbar-thumb-active: rgba(255, 255, 255, 0.40);
   }
 }
 
@@ -56,6 +68,11 @@ body.light-theme {
   --shadow-sm: 0 1.6px 3.6px rgba(0, 0, 0, 0.13), 0 0.3px 0.9px rgba(0, 0, 0, 0.11);
   --shadow-md: 0 3.2px 7.2px rgba(0, 0, 0, 0.13), 0 0.6px 1.8px rgba(0, 0, 0, 0.11);
   --shadow-lg: 0 6.4px 14.4px rgba(0, 0, 0, 0.13), 0 1.2px 3.6px rgba(0, 0, 0, 0.11);
+  /* Light manual theme scrollbar */
+  --scrollbar-track: rgba(0, 0, 0, 0.06);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.28);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.38);
+  --scrollbar-thumb-active: rgba(0, 0, 0, 0.46);
 }
 
 body.dark-theme {
@@ -73,6 +90,11 @@ body.dark-theme {
   --shadow-sm: 0 1.6px 3.6px rgba(0, 0, 0, 0.4), 0 0.3px 0.9px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 3.2px 7.2px rgba(0, 0, 0, 0.4), 0 0.6px 1.8px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 6.4px 14.4px rgba(0, 0, 0, 0.4), 0 1.2px 3.6px rgba(0, 0, 0, 0.3);
+  /* Dark manual theme scrollbar */
+  --scrollbar-track: rgba(255, 255, 255, 0.06);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.24);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
+  --scrollbar-thumb-active: rgba(255, 255, 255, 0.40);
 }
 
 /* Base Styles */
@@ -80,6 +102,9 @@ body.dark-theme {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 body {
@@ -89,6 +114,35 @@ body {
   line-height: 1.6;
   min-height: 100vh;
   transition: var(--transition);
+}
+
+/* WebKit-based browsers (Chrome/Edge/Safari) */
+*::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+*::-webkit-scrollbar-track {
+  background: transparent; /* 使用透明轨道，避免大块底色显得厚重 */
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: var(--scrollbar-radius);
+  border: 2px solid transparent; /* 让拇指更细，且有内边距效果 */
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+*::-webkit-scrollbar-thumb:active {
+  background-color: var(--scrollbar-thumb-active);
+}
+
+/* 让模态内容区的滚动条更精致一些（略窄） */
+.modal-content::-webkit-scrollbar {
+  width: 8px;
+}
+.modal-content {
+  scrollbar-width: thin; /* Firefox */
 }
 
 .container {
@@ -645,6 +699,8 @@ body.dark-theme #chooseRestroomList .choose-btn {
   align-items: center;
   justify-content: center;
   padding: 20px;
+  /* 防止滚动链穿透到页面主体 */
+  overscroll-behavior: contain;
 }
 
 .modal.show {
@@ -659,6 +715,11 @@ body.dark-theme #chooseRestroomList .choose-btn {
   width: 100%;
   box-shadow: var(--shadow-lg);
   animation: modalSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  /* 当内容过长时，滚动模态内容，不穿透到背景 */
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 /* Ensure modal text follows theme colors (fixes dark-mode modal text) */
@@ -682,6 +743,11 @@ body.dark-theme #chooseRestroomList .choose-btn {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* 当有模态窗口显示时，禁止页面主体滚动（防止触控穿透） */
+body.modal-open {
+  overflow: hidden;
 }
 
 /* Locating spinner and states */
